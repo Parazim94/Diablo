@@ -8,6 +8,7 @@ export class PlayerState {
   points = 0;
   str = 0;
   vit = 0;
+  potions = { life: 2, mana: 1 };
   inventory: (Item | null)[] = Array(INV_SIZE).fill(null);
   equipment: Record<Slot, Item | null> = { helmet: null, armor: null, weapon: null, boots: null, ring: null };
   hp: number;
@@ -67,13 +68,14 @@ export class PlayerState {
   }
 
   toJSON() {
-    return { level: this.level, xp: this.xp, points: this.points, str: this.str, vit: this.vit,
+    return { level: this.level, xp: this.xp, points: this.points, str: this.str, vit: this.vit, potions: this.potions,
       inventory: this.inventory, equipment: this.equipment };
   }
 
   static fromJSON(d: ReturnType<PlayerState['toJSON']>) {
     const s = new PlayerState();
     s.level = d.level ?? 1; s.xp = d.xp ?? 0; s.points = d.points ?? 0; s.str = d.str ?? 0; s.vit = d.vit ?? 0;
+    s.potions = { life: d.potions?.life ?? 2, mana: d.potions?.mana ?? 1 };
     s.inventory = Array.from({ length: INV_SIZE }, (_, i) => d.inventory?.[i] ?? null);
     s.equipment = { ...s.equipment, ...d.equipment };
     s.hp = s.maxHp; s.mana = s.maxMana;

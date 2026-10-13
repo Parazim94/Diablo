@@ -10,6 +10,7 @@ import { saveGame, loadGame } from '../save';
 interface Enemy {
   type: EnemyType;
   sprite: Phaser.GameObjects.Image;
+  shadow: Phaser.GameObjects.Image;
   size: number;
   bar: Phaser.GameObjects.Graphics;
   hp: number;
@@ -24,7 +25,7 @@ interface Enemy {
 
 interface Projectile { s: Phaser.GameObjects.Arc; vx: number; vy: number; dmg: number; life: number }
 
-interface GroundItem { item: Item; box: Phaser.GameObjects.Rectangle; icon: Phaser.GameObjects.Image; label: Phaser.GameObjects.Text }
+interface GroundItem { item?: Item; potion?: 'life' | 'mana'; box: Phaser.GameObjects.Rectangle; icon: Phaser.GameObjects.Image; label: Phaser.GameObjects.Text }
 
 interface Skill { key: string; name: string; mana: number; cooldown: number }
 
@@ -39,6 +40,9 @@ const SKILLS: Skill[] = [
 ];
 const BUFF_MS = 6000;
 const PLAYER_FRAME = 96;
+const POTION_FRAME = { life: 115, mana: 116 };
+const POTION_NAME = { life: 'Lebenstrank', mana: 'Manatrank' };
+const POTION_COOLDOWN = 1200;
 const STAIRS_FRAME = 9;
 // Frames of the packed Kenney tilesheet (12 columns, row-major).
 const THEMES = [
@@ -69,6 +73,10 @@ export class GameScene extends Phaser.Scene {
   private dead = false;
   private victory = false;
   private paused = false;
+  private playerShadow!: Phaser.GameObjects.Image;
+  private potionReadyAt = 0;
+  private lastPos = new WeakMap<object, { x: number; y: number }>();
+  private potionHud!: { icon: Phaser.GameObjects.Image; text: Phaser.GameObjects.Text }[];
   private pauseText!: Phaser.GameObjects.Text;
   private onUnload = () => this.persist();
   private explored: boolean[][] = [];
@@ -111,6 +119,7 @@ export class GameScene extends Phaser.Scene {
 
   create() {
     this.makeTextures();
+    this.playerShadow = this.add.image(0, 0, 'shadow').setScale(1.1).setDepth(8);
     this.player = this.sprite(PLAYER_FRAME).setDepth(10);
     this.cameras.main.startFollow(this.player, true, 0.12, 0.12);
     this.cameras.main.setBounds(0, 0, MAP_W * TILE, MAP_H * TILE);
@@ -122,6 +131,13 @@ export class GameScene extends Phaser.Scene {
     this.skillLabels = SKILLS.map(sk => this.add.text(0, 0, sk.key, { ...txt, color: '#fff', fontSize: '14px' }).setScrollFactor(0).setDepth(102));
     this.skillZones = SKILLS.map((_, i) => this.add.rectangle(0, 0, 48, 48, 0xffffff, 0.001).setOrigin(0).setScrollFactor(0).setDepth(103)
       .setInteractive({ useHandCursor: true }).on('pointerdown', () => { sfx.init(); this.useSkill(i); }));
+    this.potionHud = (['life', 'mana'] as const).map(kind => {
+      const icon = this.sprite(POTION_FRAME[kind]).setScrollFactor(0).setDepth(102).setInteractive({ useHandCursor: true })
+        .on('pointerdown', () => { sfx.init(); this.usePotion(kind); });
+      const text = this.add.text(0, 0, '', { fontFamily: 'serif', fontSize: '14px', color: '#fff', stroke: '#000', strokeThickness: 3 })
+        .setScrollFactor(0).setDepth(102).setOrigin(0.5, 0);
+      return { icon, text };
+    });
     this.banner = this.add.text(0, 0, '', { fontFamily: 'serif', fontSize: '40px', color: '#b01010', align: 'center', stroke: '#000', strokeThickness: 6 })
       .setOrigin(0.5).setScrollFactor(0).setDepth(250).setVisible(false);
     this.marker = this.add.circle(0, 0, 6, 0xffd060, 0.8).setVisible(false).setDepth(1);
@@ -141,7 +157,8 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard!.on('keydown-ESC', () => { if (this.panel.visible) this.closePanel(); else this.togglePause(); });
     this.input.keyboard!.on('keydown-P', () => this.togglePause());
     this.input.keyboard!.on('keydown-M', () => { sfx.init(); sfx.toggleMute(); });
-    this.input.keyboard!.on('keydown-Q', () => { if (this.paused) this.leaveToMenu(); });
+    this.input.keyboard!.on('keydown-Q', () => { if (this.paused) this.leaveToMenu(); else this.usePotion('life'); });
+    this.input.keyboard!.on('keydown-E', () => this.usePotion('mana'));
 
     this.pauseText = this.add.text(0, 0, 'PAUSE\n\nESC / P: weiter\nQ: Hauptmenü (speichert)', {
       fontFamily: 'serif', fontSize: '34px', color: '#e8d9a8', align: 'center', stroke: '#000', strokeThickness: 6, lineSpacing: 6,
@@ -183,6 +200,8 @@ export class GameScene extends Phaser.Scene {
     const g = this.make.graphics({}, false);
     g.fillStyle(0x14121c).fillRect(0, 0, TILE, TILE);
     g.generateTexture('wall', TILE, TILE);
+    g.clear().fillStyle(0x000000, 0.4).fillEllipse(14, 6, 24, 10);
+    g.generateTexture('shadow', 28, 12);
     g.destroy();
   }
 
@@ -197,7 +216,7 @@ export class GameScene extends Phaser.Scene {
   private startLevel() {
     for (const o of this.levelObjs) o.destroy();
     this.levelObjs = [];
-    for (const e of this.enemies) { e.sprite.destroy(); e.bar.destroy(); }
+    for (const e of this.enemies) { e.sprite.destroy(); e.shadow.destroy(); e.bar.destroy(); }
     for (const g of this.ground) { g.box.destroy(); g.icon.destroy(); g.label.destroy(); }
     for (const p of this.projectiles) p.s.destroy();
     this.enemies = []; this.ground = []; this.projectiles = [];
@@ -262,10 +281,11 @@ export class GameScene extends Phaser.Scene {
     const scale = boss ? 2.2 : elite ? 1.3 : 1;
     const hpMult = this.scaling * (elite ? 2.5 : 1);
     const sprite = this.sprite(type.frame, x, y, 2 * scale).setDepth(9);
+    const shadow = this.add.image(x, y + 12 * scale, 'shadow').setScale(scale * 1.1).setDepth(8);
     if (elite) sprite.setTint(0xffe080);
     const hp = Math.round(type.hp * hpMult);
     this.enemies.push({
-      type, sprite, size: scale, bar: this.add.graphics().setDepth(9), hp, maxHp: hp, elite,
+      type, sprite, shadow, size: scale, bar: this.add.graphics().setDepth(9), hp, maxHp: hp, elite,
       dmgMult: this.scaling * (elite ? 1.5 : 1), radius: 10 * scale, nextAttack: 0, nextNova: 3000, home: { x, y },
     });
   }
@@ -319,7 +339,7 @@ export class GameScene extends Phaser.Scene {
   private killEnemy(e: Enemy) {
     const { x, y } = e.sprite, boss = e.type.key === 'boss';
     this.burst(x, y, e.type.body, 14, 70);
-    e.sprite.destroy(); e.bar.destroy();
+    e.sprite.destroy(); e.shadow.destroy(); e.bar.destroy();
     this.enemies = this.enemies.filter(o => o !== e);
     if (this.target === e) this.target = null;
 
@@ -336,6 +356,8 @@ export class GameScene extends Phaser.Scene {
     } else if (Math.random() < DROP_CHANCE) {
       this.dropItem(x, y, generateItem(ilvl));
     }
+    const potionChance = boss ? 1 : e.elite ? 0.6 : 0.12;
+    if (Math.random() < potionChance) this.dropPotion(x, y, Math.random() < 0.65 ? 'life' : 'mana');
   }
 
   private win() {
@@ -428,8 +450,49 @@ export class GameScene extends Phaser.Scene {
     if (item.rarity === 'legendary') this.cameras.main.flash(200, 255, 140, 40);
   }
 
+  private dropPotion(x: number, y: number, kind: 'life' | 'mana') {
+    const ox = Phaser.Math.Between(-14, 14), oy = Phaser.Math.Between(-14, 14);
+    const color = kind === 'life' ? 0xd03030 : 0x3060d0;
+    const box = this.add.rectangle(x + ox, y + oy, 26, 26, color, 0.25).setStrokeStyle(2, color).setDepth(5);
+    const icon = this.sprite(POTION_FRAME[kind], x + ox, y + oy).setDepth(5);
+    const label = this.add.text(x + ox, y + oy - 16, POTION_NAME[kind], {
+      fontFamily: 'serif', fontSize: '13px', color: kind === 'life' ? '#ff7070' : '#7fa0ff', stroke: '#000', strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(6);
+    this.ground.push({ potion: kind, box, icon, label });
+  }
+
+  private usePotion(kind: 'life' | 'mana') {
+    const s = this.state, now = this.time.now;
+    if (this.dead || this.victory || this.paused || now < this.potionReadyAt || s.potions[kind] <= 0) return;
+    const full = kind === 'life' ? s.hp >= s.maxHp : s.mana >= s.maxMana;
+    if (full) return;
+    s.potions[kind]--;
+    this.potionReadyAt = now + POTION_COOLDOWN;
+    sfx.play('potion');
+    if (kind === 'life') {
+      const heal = Math.round(s.maxHp * 0.4);
+      s.hp = Math.min(s.maxHp, s.hp + heal);
+      this.floatText(this.player.x, this.player.y - 30, `+${heal}`, '#6fe06f', 18);
+      this.burst(this.player.x, this.player.y, 0xd03030, 8, 40);
+    } else {
+      const gain = Math.round(s.maxMana * 0.5);
+      s.mana = Math.min(s.maxMana, s.mana + gain);
+      this.floatText(this.player.x, this.player.y - 30, `+${gain}`, '#7fa0ff', 18);
+      this.burst(this.player.x, this.player.y, 0x3060d0, 8, 40);
+    }
+  }
+
   private tryPickup(g: GroundItem) {
-    if (!this.state.addItem(g.item)) {
+    if (g.potion) {
+      this.state.potions[g.potion]++;
+      sfx.play('pickup');
+      g.box.destroy(); g.icon.destroy(); g.label.destroy();
+      this.ground = this.ground.filter(o => o !== g);
+      this.persist();
+      this.pickup = null; this.path = [];
+      return;
+    }
+    if (!this.state.addItem(g.item!)) {
       this.floatText(this.player.x, this.player.y - 30, 'Inventar voll', '#ff4040');
     } else {
       sfx.play('pickup');
@@ -451,9 +514,32 @@ export class GameScene extends Phaser.Scene {
     s.mana = Math.min(s.maxMana, s.mana + 3 * dt);
     s.hp = Math.min(s.maxHp, s.hp + 0.5 * dt);
     this.player.setTint(time < this.buffUntil ? 0xffa060 : 0xffffff);
+    this.animate(time);
     this.updateExplored();
     this.drawHud(time);
     if (this.panel.visible && Math.floor(time / 500) !== Math.floor((time - delta) / 500)) this.panel.refresh();
+  }
+
+  /** Walk wobble and shadow follow – purely visual. */
+  private animate(time: number) {
+    const moved = (o: Phaser.GameObjects.Image) => {
+      const prev = this.lastPos.get(o);
+      this.lastPos.set(o, { x: o.x, y: o.y });
+      return !!prev && Math.abs(o.x - prev.x) + Math.abs(o.y - prev.y) > 0.05;
+    };
+    const wobble = (sp: Phaser.GameObjects.Image, walking: boolean, phase: number) => {
+      sp.setAngle(walking ? Math.sin(time / 55 + phase) * 7 : 0);
+    };
+    wobble(this.player, moved(this.player), 0);
+    this.playerShadow.setPosition(this.player.x, this.player.y + 13);
+    for (const e of this.enemies) {
+      wobble(e.sprite, moved(e.sprite), e.home.x);
+      e.shadow.setPosition(e.sprite.x, e.sprite.y + 12 * e.size);
+    }
+  }
+
+  private lunge(sp: Phaser.GameObjects.Image, base: number) {
+    this.tweens.add({ targets: sp, scale: base * 1.25, duration: 70, yoyo: true, onComplete: () => sp.setScale(base) });
   }
 
   private updatePlayer(time: number, dt: number) {
@@ -466,6 +552,7 @@ export class GameScene extends Phaser.Scene {
         this.path = [];
         if (time >= this.nextAttack) {
           this.nextAttack = time + PLAYER.cooldown;
+          this.lunge(this.player, 2);
           this.hitEnemy(t);
           this.state.mana = Math.min(this.state.maxMana, this.state.mana + 2);
         }
@@ -521,6 +608,7 @@ export class GameScene extends Phaser.Scene {
         move(1);
       } else if (d <= t.range + e.radius * 0.6 && time >= e.nextAttack) {
         e.nextAttack = time + t.cooldown;
+        this.lunge(sp, 2 * e.size);
         this.damagePlayer(dmg());
         if (this.dead) return;
       }
@@ -617,6 +705,14 @@ export class GameScene extends Phaser.Scene {
     g.clear();
     this.orb(m + r + 4, height - m - r - 4, r, s.hp / s.maxHp, 0xb01818);
     this.orb(width - m - r - 4, height - m - r - 4, r, s.mana / s.maxMana, 0x1c4fc0);
+
+    this.potionHud.forEach((p, i) => {
+      const kind = i === 0 ? 'life' : 'mana';
+      const x = i === 0 ? m + r + 4 : width - m - r - 4, y = height - m - 2 * r - 34;
+      const n = s.potions[kind];
+      p.icon.setPosition(x, y).setAlpha(n > 0 ? 1 : 0.35);
+      p.text.setPosition(x, y + 16).setText(`${i === 0 ? 'Q' : 'E'} · ${n}`);
+    });
 
     const size = 48, gap = 8, total = SKILLS.length * size + (SKILLS.length - 1) * gap;
     const x0 = width / 2 - total / 2, y0 = height - m - size;

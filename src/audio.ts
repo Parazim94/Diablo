@@ -29,13 +29,14 @@ class AudioFx {
     o.type = type;
     o.frequency.setValueAtTime(freq, t);
     if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
-    g.gain.setValueAtTime(vol, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.008); // short attack avoids clicks
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     o.connect(g).connect(this.master);
     o.start(t); o.stop(t + dur + 0.05);
   }
 
-  private noise(dur: number, vol: number, freq: number, type: BiquadFilterType = 'bandpass') {
+  private noise(dur: number, vol: number, freq: number, type: BiquadFilterType = 'lowpass') {
     const c = this.ctx; if (!c) return;
     const len = Math.floor(c.sampleRate * dur);
     const buf = c.createBuffer(1, len, c.sampleRate), d = buf.getChannelData(0);
@@ -48,21 +49,25 @@ class AudioFx {
     src.start(t);
   }
 
-  play(name: 'hit' | 'crit' | 'hurt' | 'pickup' | 'levelup' | 'whirl' | 'buff' | 'bash' | 'death' | 'stairs' | 'shoot' | 'equip' | 'win') {
+  play(name: 'hit' | 'crit' | 'hurt' | 'pickup' | 'levelup' | 'whirl' | 'buff' | 'bash' | 'death' | 'stairs' | 'shoot' | 'equip' | 'win' | 'potion') {
     if (!this.ctx || this.muted) return;
     switch (name) {
-      case 'hit': this.noise(0.08, 0.5, 1400); this.tone(200, 0.1, 'sawtooth', 0.15, 80); break;
-      case 'crit': this.noise(0.12, 0.6, 1800); this.tone(700, 0.15, 'square', 0.12, 300); this.tone(160, 0.15, 'sawtooth', 0.2, 60); break;
-      case 'hurt': this.tone(140, 0.18, 'sawtooth', 0.22, 60); break;
-      case 'pickup': this.tone(600, 0.12, 'sine', 0.2, 950); break;
-      case 'equip': this.tone(320, 0.06, 'square', 0.1, 220); break;
-      case 'levelup': [440, 554, 659, 880].forEach((f, i) => this.tone(f, 0.35, 'triangle', 0.2, undefined, i * 0.1)); break;
-      case 'whirl': this.noise(0.3, 0.5, 900); break;
-      case 'bash': this.noise(0.1, 0.7, 500); this.tone(110, 0.25, 'sawtooth', 0.3, 40); break;
-      case 'buff': this.tone(200, 0.4, 'sawtooth', 0.15, 500); break;
-      case 'death': this.tone(220, 1.0, 'sawtooth', 0.3, 35); break;
-      case 'stairs': this.tone(320, 0.6, 'triangle', 0.25, 90); break;
-      case 'shoot': this.tone(520, 0.1, 'triangle', 0.1, 280); break;
+      // Mostly tonal "thuds" instead of broadband noise, which sounded like hissing.
+      case 'hit': this.tone(170, 0.12, 'triangle', 0.4, 55); this.noise(0.04, 0.12, 700); break;
+      case 'crit':
+        this.tone(190, 0.16, 'triangle', 0.5, 50); this.noise(0.05, 0.15, 900);
+        this.tone(1320, 0.25, 'sine', 0.12); this.tone(1980, 0.2, 'sine', 0.06); break;
+      case 'hurt': this.tone(120, 0.2, 'sawtooth', 0.12, 55); this.tone(90, 0.2, 'sine', 0.3, 45); break;
+      case 'pickup': this.tone(660, 0.1, 'sine', 0.18); this.tone(990, 0.18, 'sine', 0.16, undefined, 0.07); break;
+      case 'equip': this.tone(260, 0.08, 'triangle', 0.25, 160); break;
+      case 'potion': [380, 460, 560].forEach((f, i) => this.tone(f, 0.09, 'sine', 0.18, f * 1.4, i * 0.07)); break;
+      case 'levelup': [440, 554, 659, 880].forEach((f, i) => this.tone(f, 0.4, 'triangle', 0.2, undefined, i * 0.1)); break;
+      case 'whirl': this.tone(220, 0.3, 'triangle', 0.22, 760); this.tone(440, 0.3, 'sine', 0.1, 1100); this.noise(0.15, 0.06, 600); break;
+      case 'bash': this.tone(130, 0.3, 'sine', 0.55, 32); this.tone(260, 0.1, 'triangle', 0.25, 90); this.noise(0.05, 0.15, 400); break;
+      case 'buff': this.tone(196, 0.45, 'triangle', 0.2, 392); this.tone(294, 0.45, 'sine', 0.12, 588); break;
+      case 'death': this.tone(196, 1.0, 'triangle', 0.35, 33); this.tone(98, 1.0, 'sine', 0.3, 30); break;
+      case 'stairs': this.tone(330, 0.6, 'triangle', 0.22, 90); break;
+      case 'shoot': this.tone(480, 0.09, 'triangle', 0.14, 260); break;
       case 'win': [523, 659, 784, 1047, 784, 1047].forEach((f, i) => this.tone(f, 0.45, 'triangle', 0.22, undefined, i * 0.14)); break;
     }
   }
@@ -72,19 +77,19 @@ class AudioFx {
     const c = this.ctx;
     if (!c || this.musicOn) return;
     this.musicOn = true;
-    const g = c.createGain(); g.gain.value = 0.05;
-    const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 320;
+    const g = c.createGain(); g.gain.value = 0.07;
+    const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 240;
     const lfo = c.createOscillator(), lg = c.createGain();
-    lfo.frequency.value = 0.07; lg.gain.value = 140;
+    lfo.frequency.value = 0.07; lg.gain.value = 60;
     lfo.connect(lg).connect(f.frequency); lfo.start();
-    for (const [fr, ty] of [[55, 'sine'], [82.7, 'triangle'], [110.4, 'sawtooth']] as [number, OscillatorType][]) {
+    for (const [fr, ty] of [[55, 'sine'], [82.7, 'sine'], [110, 'triangle']] as [number, OscillatorType][]) {
       const o = c.createOscillator(); o.type = ty; o.frequency.value = fr; o.connect(f); o.start();
     }
     f.connect(g).connect(this.master);
 
     const scale = [220, 261.6, 293.7, 329.6, 392, 440];
     const next = () => {
-      if (!this.muted && this.ctx) this.tone(scale[Math.floor(Math.random() * scale.length)] / 2, 3, 'sine', 0.05);
+      if (!this.muted && this.ctx) this.tone(scale[Math.floor(Math.random() * scale.length)] / 2, 3.5, 'sine', 0.07);
       setTimeout(next, 3500 + Math.random() * 5000);
     };
     setTimeout(next, 2000);

@@ -19,6 +19,7 @@ Fünf Ebenen voller Untoter, Dämonen und Bogenschützen liegen zwischen dir und
 - **Vier Gegnertypen:** Oger, Geister, Fledermäuse und Bogenschützen, die dich aus der Distanz beschießen und ausweichen.
 - **Elite-Gegner:** Goldene Brocken mit mehr Leben, mehr Schaden und garantierter Beute.
 - **Bosskampf:** Der Fürst der Tiefe feuert Projektilringe und erfordert Bewegung statt Dauerklicken.
+- **Tränke:** Gegner lassen Lebens- und Manatränke fallen, du startest mit zwei Lebens- und einem Manatrank.
 - **Drei Fähigkeiten:** Wuchtschlag, Wirbelwind und Schlachtruf.
 - **Beute-Jagd:** Vier Seltenheitsstufen von grau über blau und gelb bis **legendär**, mit Zufallswerten auf Schaden, Rüstung, Leben und kritischen Treffern.
 - **Charakterentwicklung:** Stufenaufstiege, Attributspunkte für Stärke und Vitalität, fünf Ausrüstungsplätze.
@@ -39,6 +40,7 @@ Fünf Ebenen voller Untoter, Dämonen und Bogenschützen liegen zwischen dir und
 | **1** | Wuchtschlag: schwerer Treffer auf ein Ziel (8 Mana) |
 | **2** | Wirbelwind: trifft alle Gegner im Umkreis (20 Mana) |
 | **3** | Schlachtruf: 6 Sekunden lang +40 % Schaden (15 Mana) |
+| **Q** / **E** | Lebenstrank (heilt 40 %) / Manatrank (füllt 50 % auf) |
 | **I** oder **C** | Charakter und Inventar |
 | **ESC** oder **P** | Pause (dort beendet **Q** zum Hauptmenü) |
 | **M** | Ton an/aus |
@@ -114,9 +116,9 @@ Gegner anpassen, Beute verändern oder neue Fähigkeiten einbauen: Die meisten W
 
 ### Mögliche nächste Schritte
 
-- Tränke und weitere Fähigkeiten
+- Weitere Fähigkeiten
 - Weitere Klassen neben dem Krieger
-- Animierte Gegner und Schatten
+- Richtige Sprite-Animationen (bisher nur Wackeln beim Laufen)
 - Mehr Gegnertypen und Spezialangriffe pro Ebene
 - Online-Bestenliste
 
