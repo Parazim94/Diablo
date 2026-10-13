@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { PlayerState, INV_SIZE } from '../state';
-import { Item, SLOTS, Slot, SLOT_LABEL, SLOT_ABBR, STAT_LABEL, RARITY_COLOR, RARITY_CSS, StatKey } from '../items';
+import { Item, SLOTS, Slot, SLOT_LABEL, SLOT_ABBR, STAT_LABEL, RARITY_COLOR, RARITY_CSS, StatKey, iconOf } from '../items';
 
 const CELL = 44, COLS = 5, W = 600, H = 350;
 const FONT = { fontFamily: 'serif', fontSize: '15px', color: '#d8cdb4' };
@@ -90,7 +90,7 @@ export class InventoryPanel {
     const sc = this.scene;
     const color = item ? RARITY_COLOR[item.rarity] : 0x3a302a;
     const r = add(sc.add.rectangle(x, y, CELL, CELL, item ? 0x241b16 : 0x181210).setOrigin(0).setStrokeStyle(2, color).setInteractive({ useHandCursor: !!item }));
-    if (item) add(sc.add.text(x + CELL / 2, y + CELL / 2, SLOT_ABBR[item.slot], { ...FONT, fontSize: '16px', color: RARITY_CSS[item.rarity] }).setOrigin(0.5));
+    if (item) add(sc.add.image(x + CELL / 2, y + CELL / 2, 'tiles', iconOf(item)).setScale(2));
     else if (hint) add(sc.add.text(x + CELL / 2, y + CELL / 2, hint, { ...FONT, color: '#3a302a' }).setOrigin(0.5));
     r.on('pointerdown', onClick);
     r.on('pointerover', (p: Phaser.Input.Pointer) => item && this.showTip(item, p));

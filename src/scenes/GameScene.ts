@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { TILE, MAP_W, MAP_H, generateDungeon, findPath, Dungeon } from '../dungeon';
 import { PlayerState } from '../state';
-import { Item, generateItem, rollRarity, RARITY_COLOR, RARITY_CSS } from '../items';
+import { Item, iconOf, generateItem, rollRarity, RARITY_COLOR, RARITY_CSS } from '../items';
 import { EnemyType, TYPES, MAX_DEPTH, pickType } from '../enemies';
 import { InventoryPanel } from '../ui/InventoryPanel';
 import { sfx } from '../audio';
@@ -10,6 +10,7 @@ import { saveGame, loadGame } from '../save';
 interface Enemy {
   type: EnemyType;
   sprite: Phaser.GameObjects.Image;
+  size: number;
   bar: Phaser.GameObjects.Graphics;
   hp: number;
   maxHp: number;
@@ -23,7 +24,7 @@ interface Enemy {
 
 interface Projectile { s: Phaser.GameObjects.Arc; vx: number; vy: number; dmg: number; life: number }
 
-interface GroundItem { item: Item; box: Phaser.GameObjects.Rectangle; label: Phaser.GameObjects.Text }
+interface GroundItem { item: Item; box: Phaser.GameObjects.Rectangle; icon: Phaser.GameObjects.Image; label: Phaser.GameObjects.Text }
 
 interface Skill { key: string; name: string; mana: number; cooldown: number }
 
@@ -37,6 +38,14 @@ const SKILLS: Skill[] = [
   { key: '3', name: 'Schlachtruf', mana: 15, cooldown: 12000 },
 ];
 const BUFF_MS = 6000;
+const PLAYER_FRAME = 96;
+const STAIRS_FRAME = 9;
+// Frames of the packed Kenney tilesheet (12 columns, row-major).
+const THEMES = [
+  { floor: [...Array(90).fill(0), 12, 24], wall: 40, tint: 0xffffff },
+  { floor: [...Array(12).fill(48), 49, 51], wall: 57, tint: 0xffffff },
+  { floor: [...Array(90).fill(0), 12, 24], wall: 40, tint: 0xa8a8ff },
+];
 
 export class GameScene extends Phaser.Scene {
   private dungeon!: Dungeon;
@@ -102,7 +111,7 @@ export class GameScene extends Phaser.Scene {
 
   create() {
     this.makeTextures();
-    this.player = this.add.image(0, 0, 'player').setDepth(10);
+    this.player = this.sprite(PLAYER_FRAME).setDepth(10);
     this.cameras.main.startFollow(this.player, true, 0.12, 0.12);
     this.cameras.main.setBounds(0, 0, MAP_W * TILE, MAP_H * TILE);
 
@@ -170,52 +179,16 @@ export class GameScene extends Phaser.Scene {
   private closePanel() { this.panel.toggle(); this.persist(); }
 
   private makeTextures() {
-    if (this.textures.exists('player')) return;
+    if (this.textures.exists('wall')) return;
     const g = this.make.graphics({}, false);
-    const tex = (key: string, size: number, draw: () => void) => { g.clear(); draw(); g.generateTexture(key, size, size); };
-
-    // Floor/wall palettes shift with depth so each level feels different.
-    const palettes = [
-      { floor: 0x2b2522, dot: 0x332c28, edge: 0x4a3f38, edgeLow: 0x3a312b },
-      { floor: 0x22282b, dot: 0x2a3236, edge: 0x3a4650, edgeLow: 0x2b353d },
-      { floor: 0x2b2224, dot: 0x36292c, edge: 0x502e34, edgeLow: 0x3d2227 },
-    ];
-    palettes.forEach((c, i) => {
-      tex(`floor${i}`, TILE, () => {
-        g.fillStyle(c.floor).fillRect(0, 0, TILE, TILE);
-        g.lineStyle(1, 0x151110).strokeRect(0.5, 0.5, TILE - 1, TILE - 1);
-        g.fillStyle(c.dot).fillRect(4, 4, 6, 4).fillRect(18, 20, 8, 4);
-      });
-      tex(`wallEdge${i}`, TILE, () => {
-        g.fillStyle(c.edge).fillRect(0, 0, TILE, TILE);
-        g.fillStyle(c.edgeLow).fillRect(0, TILE - 8, TILE, 8);
-        g.lineStyle(1, 0x1a1411).strokeRect(0.5, 0.5, TILE - 1, TILE - 1);
-      });
-    });
-    tex('wall', TILE, () => {
-      g.fillStyle(0x0f0c0b).fillRect(0, 0, TILE, TILE);
-      g.lineStyle(1, 0x070505).strokeRect(0.5, 0.5, TILE - 1, TILE - 1);
-    });
-    tex('stairs', TILE, () => {
-      g.fillStyle(0x0a0707).fillRect(0, 0, TILE, TILE);
-      for (let i = 0; i < 5; i++) g.fillStyle(0x3a2e24 + i * 0x0a0805).fillRect(2 + i * 2, 2 + i * 6, TILE - 4 - i * 4, 5);
-      g.lineStyle(2, 0xffd060).strokeRect(1, 1, TILE - 2, TILE - 2);
-    });
-    tex('player', 32, () => {
-      g.fillStyle(0x000000, 0.35).fillEllipse(16, 26, 22, 8);
-      g.fillStyle(0x8a929c).fillCircle(16, 16, 11);
-      g.fillStyle(0xb02020).fillCircle(16, 16, 6);
-      g.fillStyle(0xdddddd).fillRect(24, 13, 8, 3);
-    });
-    for (const t of Object.values(TYPES)) {
-      tex(`enemy_${t.key}`, 32, () => {
-        g.fillStyle(0x000000, 0.35).fillEllipse(16, 26, 22, 8);
-        g.fillStyle(t.body).fillCircle(16, 16, 11);
-        g.fillStyle(t.eye).fillCircle(12, 13, 2).fillCircle(20, 13, 2);
-        if (t.ranged) g.lineStyle(2, 0xc8a060).strokeCircle(26, 16, 5);
-      });
-    }
+    g.fillStyle(0x14121c).fillRect(0, 0, TILE, TILE);
+    g.generateTexture('wall', TILE, TILE);
     g.destroy();
+  }
+
+  /** Sprite from the Kenney tileset (16px frames drawn at 2x). */
+  private sprite(frame: number, x = 0, y = 0, scale = 2) {
+    return this.add.image(x, y, 'tiles', frame).setScale(scale);
   }
 
   // ---------- Level ----------
@@ -225,7 +198,7 @@ export class GameScene extends Phaser.Scene {
     for (const o of this.levelObjs) o.destroy();
     this.levelObjs = [];
     for (const e of this.enemies) { e.sprite.destroy(); e.bar.destroy(); }
-    for (const g of this.ground) { g.box.destroy(); g.label.destroy(); }
+    for (const g of this.ground) { g.box.destroy(); g.icon.destroy(); g.label.destroy(); }
     for (const p of this.projectiles) p.s.destroy();
     this.enemies = []; this.ground = []; this.projectiles = [];
     this.path = []; this.target = null; this.pickup = null; this.toStairs = false; this.stairs = null;
@@ -237,10 +210,16 @@ export class GameScene extends Phaser.Scene {
     const add = (o: Phaser.GameObjects.Image) => { this.levelObjs.push(o); return o; };
     for (let y = 0; y < MAP_H; y++) {
       for (let x = 0; x < MAP_W; x++) {
-        if (grid[y][x]) { add(this.add.image(x * TILE, y * TILE, `floor${pal}`).setOrigin(0)); continue; }
+        if (grid[y][x]) {
+          const f = Phaser.Utils.Array.GetRandom(THEMES[pal].floor);
+          add(this.sprite(f, x * TILE, y * TILE).setOrigin(0).setTint(THEMES[pal].tint));
+          continue;
+        }
         const nearFloor = [[0, 1], [1, 0], [-1, 0], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]
           .some(([dx, dy]) => grid[y + dy]?.[x + dx]);
-        if (nearFloor) add(this.add.image(x * TILE, y * TILE, grid[y + 1]?.[x] ? `wallEdge${pal}` : 'wall').setOrigin(0));
+        if (!nearFloor) continue;
+        if (grid[y + 1]?.[x]) add(this.sprite(THEMES[pal].wall, x * TILE, y * TILE).setOrigin(0).setTint(THEMES[pal].tint));
+        else add(this.add.image(x * TILE, y * TILE, 'wall').setOrigin(0));
       }
     }
 
@@ -253,7 +232,10 @@ export class GameScene extends Phaser.Scene {
       this.spawnEnemy(TYPES.boss, cx, cy, false);
     } else {
       this.stairs = { x: Math.floor(cx / TILE) * TILE + TILE / 2, y: Math.floor(cy / TILE) * TILE + TILE / 2 };
-      add(this.add.image(this.stairs.x, this.stairs.y, 'stairs').setDepth(2));
+      const glow = this.add.rectangle(this.stairs.x, this.stairs.y, TILE, TILE, 0xffd060, 0.25).setStrokeStyle(2, 0xffd060).setDepth(2);
+      this.tweens.add({ targets: glow, alpha: 0.5, duration: 700, yoyo: true, repeat: -1 });
+      this.levelObjs.push(glow);
+      add(this.sprite(STAIRS_FRAME, this.stairs.x, this.stairs.y).setDepth(2));
     }
 
     for (const room of rooms.slice(1)) {
@@ -279,11 +261,11 @@ export class GameScene extends Phaser.Scene {
     const boss = type.key === 'boss';
     const scale = boss ? 2.2 : elite ? 1.3 : 1;
     const hpMult = this.scaling * (elite ? 2.5 : 1);
-    const sprite = this.add.image(x, y, `enemy_${type.key}`).setDepth(9).setScale(scale);
+    const sprite = this.sprite(type.frame, x, y, 2 * scale).setDepth(9);
     if (elite) sprite.setTint(0xffe080);
     const hp = Math.round(type.hp * hpMult);
     this.enemies.push({
-      type, sprite, bar: this.add.graphics().setDepth(9), hp, maxHp: hp, elite,
+      type, sprite, size: scale, bar: this.add.graphics().setDepth(9), hp, maxHp: hp, elite,
       dmgMult: this.scaling * (elite ? 1.5 : 1), radius: 10 * scale, nextAttack: 0, nextNova: 3000, home: { x, y },
     });
   }
@@ -298,7 +280,7 @@ export class GameScene extends Phaser.Scene {
     const dist = (ax: number, ay: number) => Phaser.Math.Distance.Between(ax, ay, wx, wy);
     this.target = null; this.pickup = null; this.toStairs = false;
 
-    const enemy = this.enemies.find(e => dist(e.sprite.x, e.sprite.y) < 18 * (e.sprite.scale));
+    const enemy = this.enemies.find(e => dist(e.sprite.x, e.sprite.y) < 18 * e.size);
     if (enemy) { this.target = enemy; this.marker.setVisible(false); this.pathTo(enemy.sprite.x, enemy.sprite.y); return; }
     const loot = this.ground.find(g => dist(g.box.x, g.box.y) < 22);
     if (loot) { this.pickup = loot; this.marker.setVisible(false); this.pathTo(loot.box.x, loot.box.y); return; }
@@ -329,7 +311,7 @@ export class GameScene extends Phaser.Scene {
     e.hp -= dmg;
     sfx.play(crit ? 'crit' : 'hit');
     this.burst(e.sprite.x, e.sprite.y, crit ? 0xffd040 : 0xb02020, crit ? 9 : 5);
-    this.floatText(e.sprite.x, e.sprite.y - 20 * e.sprite.scale, crit ? `${dmg}!` : String(dmg), crit ? '#ffd040' : '#ffffff', crit ? 22 : 16);
+    this.floatText(e.sprite.x, e.sprite.y - 20 * e.size, crit ? `${dmg}!` : String(dmg), crit ? '#ffd040' : '#ffffff', crit ? 22 : 16);
     this.tweens.add({ targets: e.sprite, alpha: 0.4, duration: 60, yoyo: true });
     if (e.hp <= 0) this.killEnemy(e);
   }
@@ -437,11 +419,12 @@ export class GameScene extends Phaser.Scene {
   // ---------- Loot ----------
   private dropItem(x: number, y: number, item: Item) {
     const ox = Phaser.Math.Between(-14, 14), oy = Phaser.Math.Between(-14, 14);
-    const box = this.add.rectangle(x + ox, y + oy, 14, 14, RARITY_COLOR[item.rarity]).setStrokeStyle(2, 0x000000).setDepth(5);
+    const box = this.add.rectangle(x + ox, y + oy, 26, 26, RARITY_COLOR[item.rarity], 0.35).setStrokeStyle(2, RARITY_COLOR[item.rarity]).setDepth(5);
+    const icon = this.sprite(iconOf(item), x + ox, y + oy).setDepth(5);
     const label = this.add.text(x + ox, y + oy - 16, item.name, {
       fontFamily: 'serif', fontSize: '13px', color: RARITY_CSS[item.rarity], stroke: '#000', strokeThickness: 3,
     }).setOrigin(0.5).setDepth(6);
-    this.ground.push({ item, box, label });
+    this.ground.push({ item, box, icon, label });
     if (item.rarity === 'legendary') this.cameras.main.flash(200, 255, 140, 40);
   }
 
@@ -450,7 +433,7 @@ export class GameScene extends Phaser.Scene {
       this.floatText(this.player.x, this.player.y - 30, 'Inventar voll', '#ff4040');
     } else {
       sfx.play('pickup');
-      g.box.destroy(); g.label.destroy();
+      g.box.destroy(); g.icon.destroy(); g.label.destroy();
       this.ground = this.ground.filter(o => o !== g);
       this.panel.refresh();
       this.persist();
@@ -550,7 +533,7 @@ export class GameScene extends Phaser.Scene {
 
       e.bar.clear();
       if (e.hp < e.maxHp || e.elite) {
-        const w = 28 * sp.scale, y = sp.y - 22 * sp.scale;
+        const w = 28 * e.size, y = sp.y - 22 * e.size;
         e.bar.fillStyle(0x000000).fillRect(sp.x - w / 2, y, w, 4);
         e.bar.fillStyle(e.elite ? 0xffc040 : 0xc02020).fillRect(sp.x - w / 2, y, w * (e.hp / e.maxHp), 4);
       }

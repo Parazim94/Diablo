@@ -8,6 +8,7 @@ export interface Item {
   rarity: Rarity;
   ilvl: number;
   stats: Partial<Record<StatKey, number>>;
+  icon?: number; // frame in the tilesheet
 }
 
 export const SLOTS: Slot[] = ['helmet', 'armor', 'weapon', 'boots', 'ring'];
@@ -44,6 +45,16 @@ const LEGENDARY: Record<Slot, string[]> = {
   ring: ['Siegel der Unendlichkeit'],
 };
 
+/** Tilesheet frames used as item icons. */
+const ICONS: Record<Slot, number[]> = {
+  weapon: [103, 104, 105, 106, 107, 117, 118, 119],
+  helmet: [96, 97],
+  armor: [101, 102],
+  boots: [73],
+  ring: [56],
+};
+export const iconOf = (item: Item) => item.icon ?? ICONS[item.slot][0];
+
 const pick = <T,>(a: T[]) => a[Math.floor(Math.random() * a.length)];
 
 export function rollRarity(bonus = 0): Rarity {
@@ -77,5 +88,5 @@ export function generateItem(ilvl: number, rarity: Rarity = rollRarity()): Item 
     rarity === 'legendary' ? pick(LEGENDARY[slot]) :
     rarity === 'rare' ? `${pick(RARE_NAMES)}-${base}` :
     rarity === 'magic' ? `${base} ${AFFIX[firstAffix!].suffix}` : base;
-  return { name, slot, rarity, ilvl, stats };
+  return { name, slot, rarity, ilvl, stats, icon: pick(ICONS[slot]) };
 }
