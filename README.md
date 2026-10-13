@@ -6,6 +6,23 @@ Ein Dungeon-Crawler im Stil klassischer Action-RPGs, der direkt im Browser läuf
 
 ### 👉 [Jetzt spielen: abgrund-bay.vercel.app](https://abgrund-bay.vercel.app)
 
+<p align="center">
+  <a href="https://abgrund-bay.vercel.app">
+    <img src="docs/screenshots/gameplay.png" alt="Kampf in einem Dungeon mit Beute am Boden" width="100%">
+  </a>
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/boss.png" alt="Bosskampf gegen den Fürsten der Tiefe mit Projektilring"><br><sub><b>Der Fürst der Tiefe</b> feuert Projektilringe, du musst in Bewegung bleiben.</sub></td>
+    <td width="50%"><img src="docs/screenshots/inventory.png" alt="Inventar mit Ausrüstung in vier Seltenheitsstufen"><br><sub><b>Beute und Ausrüstung</b> in vier Seltenheitsstufen bis legendär.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/menu.png" alt="Hauptmenü mit Weiter und Neues Spiel"><br><sub><b>Hauptmenü</b> mit automatischem Speicherstand.</sub></td>
+    <td width="50%"><img src="docs/screenshots/mobile.png" alt="Das Spiel auf dem Handy im Querformat"><br><sub><b>Auch auf dem Handy:</b> Tippen, Finger halten zum Laufen, große Fähigkeitsfelder.</sub></td>
+  </tr>
+</table>
+
 ---
 
 ## Das Spiel
