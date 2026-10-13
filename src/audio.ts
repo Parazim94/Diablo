@@ -1,8 +1,10 @@
+import { Music } from './music';
+
 /** Tiny synthesised sound engine – no audio files needed. */
 class AudioFx {
   private ctx: AudioContext | null = null;
   private master!: GainNode;
-  private musicOn = false;
+  private music: Music | null = null;
   muted = false;
 
   /** Must be called from a user gesture (click/key) before anything is audible. */
@@ -10,15 +12,21 @@ class AudioFx {
     if (!this.ctx) {
       this.ctx = new AudioContext();
       this.master = this.ctx.createGain();
-      this.master.gain.value = this.muted ? 0 : 0.5;
-      this.master.connect(this.ctx.destination);
+      this.master.gain.value = this.muted ? 0 : 0.6;
+      const comp = this.ctx.createDynamicsCompressor(); // keeps layered sounds from clipping
+      this.master.connect(comp).connect(this.ctx.destination);
+      // Phones suspend audio in the background; follow the tab state so nothing bursts on return.
+      document.addEventListener('visibilitychange', () => {
+        if (!this.ctx) return;
+        if (document.hidden) void this.ctx.suspend(); else void this.ctx.resume();
+      });
     }
     if (this.ctx.state === 'suspended') void this.ctx.resume();
   }
 
   toggleMute() {
     this.muted = !this.muted;
-    if (this.master) this.master.gain.value = this.muted ? 0 : 0.5;
+    if (this.master) this.master.gain.value = this.muted ? 0 : 0.6;
     return this.muted;
   }
 
@@ -72,28 +80,16 @@ class AudioFx {
     }
   }
 
-  /** Quiet dark drone with sparse minor-scale notes. */
+  /** Starts the background score (idempotent). */
   startMusic() {
     const c = this.ctx;
-    if (!c || this.musicOn) return;
-    this.musicOn = true;
-    const g = c.createGain(); g.gain.value = 0.07;
-    const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 240;
-    const lfo = c.createOscillator(), lg = c.createGain();
-    lfo.frequency.value = 0.07; lg.gain.value = 60;
-    lfo.connect(lg).connect(f.frequency); lfo.start();
-    for (const [fr, ty] of [[55, 'sine'], [82.7, 'sine'], [110, 'triangle']] as [number, OscillatorType][]) {
-      const o = c.createOscillator(); o.type = ty; o.frequency.value = fr; o.connect(f); o.start();
-    }
-    f.connect(g).connect(this.master);
-
-    const scale = [220, 261.6, 293.7, 329.6, 392, 440];
-    const next = () => {
-      if (!this.muted && this.ctx) this.tone(scale[Math.floor(Math.random() * scale.length)] / 2, 3.5, 'sine', 0.07);
-      setTimeout(next, 3500 + Math.random() * 5000);
-    };
-    setTimeout(next, 2000);
+    if (!c || this.music) return;
+    this.music = new Music(c, this.master);
+    this.music.start();
   }
+
+  /** 0 = calm exploration … 1 = heavy combat. */
+  setIntensity(v: number) { if (this.music) this.music.intensity = Math.max(0, Math.min(1, v)); }
 }
 
 export const sfx = new AudioFx();

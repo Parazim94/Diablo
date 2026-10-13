@@ -25,7 +25,7 @@ Fünf Ebenen voller Untoter, Dämonen und Bogenschützen liegen zwischen dir und
 - **Charakterentwicklung:** Stufenaufstiege, Attributspunkte für Stärke und Vitalität, fünf Ausrüstungsplätze.
 - **Minimap:** Erkundetes Gebiet, Gegner und Treppe auf einen Blick.
 - **Automatisches Speichern:** Dein Fortschritt bleibt im Browser erhalten.
-- **Eigener Sound:** Alle Effekte und die dunkle Hintergrundmusik werden im Code erzeugt, ganz ohne Audiodateien.
+- **Eigener Soundtrack:** Dunkle Hintergrundmusik in Moll mit Pad, Bass, Taiko-Trommeln, Arpeggio und Glocken. Sie wird live im Code erzeugt, ganz ohne Audiodateien, und wird im Kampf dichter und treibender.
 
 ---
 
@@ -47,7 +47,19 @@ Fünf Ebenen voller Untoter, Dämonen und Bogenschützen liegen zwischen dir und
 
 Im Inventar legst du Gegenstände per Linksklick an oder ab, ein Rechtsklick wirft sie weg. Fahre mit der Maus über einen Gegenstand, um seine Werte zu sehen.
 
-Auf Touch-Geräten funktionieren Tippen, die Fähigkeitsfelder und die Schaltflächen oben links. Getestet habe ich das bisher nur am Desktop.
+### Auf dem Handy
+
+Das Spiel läuft im Handy-Browser, am besten **quer gehalten**. Mit „Vollbild" (Android) oder über „Zum Home-Bildschirm hinzufügen" (iPhone) verschwindet die Browserleiste.
+
+| Geste | Aktion |
+|---|---|
+| **Tippen** auf Boden, Gegner, Beute oder Treppe | Laufen, Angreifen, Aufheben, Treppe benutzen |
+| **Finger gedrückt halten** | Läuft dauerhaft in Richtung des Fingers |
+| **Fähigkeitsfelder** unten in der Mitte | Wuchtschlag, Wirbelwind, Schlachtruf |
+| **Trank-Symbole** über den Kugeln | Lebens- und Manatrank |
+| **Inventar / Pause / Ton / Vollbild** oben links | Menüs und Einstellungen |
+
+Im Inventar tippst du einen Gegenstand an, siehst seine Werte und wählst „Anlegen" oder „Wegwerfen". Mit mehreren Fingern kannst du gleichzeitig laufen und Fähigkeiten auslösen.
 
 ---
 
@@ -84,7 +96,7 @@ npx vercel deploy --prod --yes
 | Spiel-Engine | [Phaser 4](https://phaser.io) |
 | Sprache | TypeScript |
 | Build | Vite |
-| Sound | Web Audio API (komplett synthetisiert) |
+| Sound | Web Audio API (Effekte und Musik komplett synthetisiert) |
 | Speicherstand | `localStorage` |
 | Hosting | Vercel (statisch) |
 
@@ -98,7 +110,8 @@ src/
 ├── items.ts             Beute-Generator, Seltenheiten und Namen
 ├── state.ts             Spielerwerte, Inventar und Ausrüstung
 ├── save.ts              Speichern und Laden
-├── audio.ts             Soundeffekte und Musik
+├── audio.ts             Soundeffekte und Audio-Engine
+├── music.ts             Generative Hintergrundmusik
 ├── scenes/
 │   ├── BootScene.ts     Lädt die Grafiken
 │   ├── MenuScene.ts     Hauptmenü

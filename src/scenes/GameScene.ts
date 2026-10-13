@@ -31,7 +31,6 @@ interface Skill { key: string; name: string; mana: number; cooldown: number }
 
 const PLAYER = { speed: 170, range: 40, cooldown: 550, radius: 10 };
 const DROP_CHANCE = 0.35;
-const MINI = 3; // minimap pixels per tile
 const PICKUP_RADIUS = 30;
 const SKILLS: Skill[] = [
   { key: '1', name: 'Wuchtschlag', mana: 8, cooldown: 1500 },
@@ -44,6 +43,7 @@ const POTION_FRAME = { life: 115, mana: 116 };
 const POTION_NAME = { life: 'Lebenstrank', mana: 'Manatrank' };
 const POTION_COOLDOWN = 1200;
 const STAIRS_FRAME = 9;
+const SKILL_ICONS = [117, 118, 29]; // hammer, double axe, red banner
 // Frames of the packed Kenney tilesheet (12 columns, row-major).
 const THEMES = [
   { floor: [...Array(90).fill(0), 12, 24], wall: 40, tint: 0xffffff },
@@ -73,11 +73,17 @@ export class GameScene extends Phaser.Scene {
   private dead = false;
   private victory = false;
   private paused = false;
+  private miniScale = 3;
+  private topButtons: Phaser.GameObjects.Text[] = [];
+  private pauseUI!: Phaser.GameObjects.Container;
+  private rotateHint!: Phaser.GameObjects.Text;
+  private holdPointer: Phaser.Input.Pointer | null = null;
+  private nextHold = 0;
+  private nextMusicCheck = 0;
   private playerShadow!: Phaser.GameObjects.Image;
   private potionReadyAt = 0;
   private lastPos = new WeakMap<object, { x: number; y: number }>();
   private potionHud!: { icon: Phaser.GameObjects.Image; text: Phaser.GameObjects.Text }[];
-  private pauseText!: Phaser.GameObjects.Text;
   private onUnload = () => this.persist();
   private explored: boolean[][] = [];
   private lastTile = '';
@@ -88,6 +94,7 @@ export class GameScene extends Phaser.Scene {
   private depthText!: Phaser.GameObjects.Text;
   private skillLabels: Phaser.GameObjects.Text[] = [];
   private skillZones: Phaser.GameObjects.Rectangle[] = [];
+  private skillIcons: Phaser.GameObjects.Image[] = [];
   private banner!: Phaser.GameObjects.Text;
   private marker!: Phaser.GameObjects.Arc;
   private panel!: InventoryPanel;
@@ -109,10 +116,25 @@ export class GameScene extends Phaser.Scene {
 
   private persist() { if (!this.dead) saveGame(this.state, this.depth_, this.loop); }
 
+  /** Phone-sized screens get larger controls and a smaller minimap. */
+  private get compact() { return Math.min(this.scale.width, this.scale.height) < 520; }
+
   private togglePause() {
     if (this.dead || this.victory) return;
     this.paused = !this.paused;
-    this.pauseText.setVisible(this.paused);
+    this.holdPointer = null;
+    this.pauseUI.setVisible(this.paused);
+  }
+
+  private showBanner(text: string, color: string, size: number) {
+    this.banner.setText(text).setColor(color).setFontSize(Math.round(size * (this.compact ? 0.65 : 1))).setVisible(true);
+  }
+
+  private toggleFullscreen() {
+    if (this.scale.isFullscreen) { this.scale.stopFullscreen(); return; }
+    this.scale.startFullscreen();
+    // Landscape suits the game best; only works in fullscreen on Android, so failure is fine.
+    try { void (screen.orientation as unknown as { lock?: (o: string) => Promise<void> }).lock?.('landscape')?.catch(() => {}); } catch { /* unsupported */ }
   }
 
   private leaveToMenu() { this.persist(); this.scene.start('Menu'); }
@@ -129,6 +151,7 @@ export class GameScene extends Phaser.Scene {
     this.hudText = this.add.text(0, 0, '', txt).setOrigin(0.5, 1).setScrollFactor(0).setDepth(102);
     this.depthText = this.add.text(16, 12, '', { ...txt, fontSize: '18px' }).setScrollFactor(0).setDepth(102);
     this.skillLabels = SKILLS.map(sk => this.add.text(0, 0, sk.key, { ...txt, color: '#fff', fontSize: '14px' }).setScrollFactor(0).setDepth(102));
+    this.skillIcons = SKILLS.map((_, i) => this.sprite(SKILL_ICONS[i]).setScrollFactor(0).setDepth(101));
     this.skillZones = SKILLS.map((_, i) => this.add.rectangle(0, 0, 48, 48, 0xffffff, 0.001).setOrigin(0).setScrollFactor(0).setDepth(103)
       .setInteractive({ useHandCursor: true }).on('pointerdown', () => { sfx.init(); this.useSkill(i); }));
     this.potionHud = (['life', 'mana'] as const).map(kind => {
@@ -145,12 +168,14 @@ export class GameScene extends Phaser.Scene {
     if (this.textures.exists('minimap')) this.textures.remove('minimap');
     this.mini = this.textures.createCanvas('minimap', MAP_W, MAP_H)!;
     this.mini.setFilter(Phaser.Textures.FilterMode.NEAREST);
-    this.add.image(0, 0, 'minimap').setOrigin(1, 0).setScale(MINI).setScrollFactor(0).setDepth(100).setName('miniImg');
+    this.add.image(0, 0, 'minimap').setOrigin(1, 0).setScale(this.miniScale).setScrollFactor(0).setDepth(100).setName('miniImg');
     this.miniOverlay = this.add.graphics().setScrollFactor(0).setDepth(101);
 
-    this.panel = new InventoryPanel(this, this.state, item => this.dropItem(this.player.x, this.player.y, item));
+    this.panel = new InventoryPanel(this, this.state, item => this.dropItem(this.player.x, this.player.y, item), () => this.closePanel());
     this.input.mouse?.disableContextMenu();
+    this.input.addPointer(2); // multi-touch: hold to walk with one finger, tap skills with another
     this.input.on('pointerdown', (p: Phaser.Input.Pointer, over: unknown[]) => { if (!over.length) this.onClick(p); });
+    this.input.on('pointerup', (p: Phaser.Input.Pointer) => { if (p === this.holdPointer) this.holdPointer = null; });
     const togglePanel = () => { sfx.init(); if (this.panel.visible) this.closePanel(); else this.panel.toggle(); };
     this.input.keyboard!.on('keydown-I', togglePanel);
     this.input.keyboard!.on('keydown-C', togglePanel);
@@ -160,17 +185,30 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard!.on('keydown-Q', () => { if (this.paused) this.leaveToMenu(); else this.usePotion('life'); });
     this.input.keyboard!.on('keydown-E', () => this.usePotion('mana'));
 
-    this.pauseText = this.add.text(0, 0, 'PAUSE\n\nESC / P: weiter\nQ: Hauptmenü (speichert)', {
-      fontFamily: 'serif', fontSize: '34px', color: '#e8d9a8', align: 'center', stroke: '#000', strokeThickness: 6, lineSpacing: 6,
-    }).setOrigin(0.5).setScrollFactor(0).setDepth(260).setVisible(false);
+    // Pause overlay with tappable buttons (no keyboard needed)
+    const menuBtn = (label: string, y: number, fn: () => void) => {
+      const t = this.add.text(0, y, label, { fontFamily: 'serif', fontSize: '30px', color: '#d8cdb4', stroke: '#000', strokeThickness: 5, padding: { x: 20, y: 8 } })
+        .setOrigin(0.5).setScrollFactor(0).setInteractive({ useHandCursor: true });
+      t.on('pointerover', () => t.setColor('#ffe14a')).on('pointerout', () => t.setColor('#d8cdb4')).on('pointerdown', fn);
+      return t;
+    };
+    const pauseTitle = this.add.text(0, -80, 'PAUSE', { fontFamily: 'serif', fontSize: '48px', color: '#e8d9a8', stroke: '#000', strokeThickness: 6 })
+      .setOrigin(0.5).setScrollFactor(0);
+    this.pauseUI = this.add.container(0, 0, [pauseTitle, menuBtn('Weiter', 0, () => this.togglePause()), menuBtn('Hauptmenü', 60, () => this.leaveToMenu())])
+      .setScrollFactor(0).setDepth(260).setVisible(false);
 
-    // Clickable shortcuts (also makes the game usable on touch devices).
-    const btnStyle = { fontFamily: 'serif', fontSize: '16px', color: '#b8ad90', stroke: '#000', strokeThickness: 3 };
-    [['[Inventar]', () => this.panel.visible ? this.closePanel() : this.panel.toggle()], ['[Pause]', () => this.togglePause()],
-     ['[Ton]', () => { sfx.init(); sfx.toggleMute(); }]].forEach(([label, fn], i) => {
-      this.add.text(16 + i * 92, 42, label as string, btnStyle).setScrollFactor(0).setDepth(102).setInteractive({ useHandCursor: true })
-        .on('pointerdown', fn as () => void);
-    });
+    // Clickable shortcuts – these are the controls on touch devices.
+    const btnStyle = { fontFamily: 'serif', fontSize: '16px', color: '#d0c4a4', stroke: '#000', strokeThickness: 3, backgroundColor: '#00000066', padding: { x: 8, y: 5 } };
+    const buttons: [string, () => void][] = [
+      ['Inventar', () => { sfx.init(); if (this.panel.visible) this.closePanel(); else this.panel.toggle(); }],
+      ['Pause', () => this.togglePause()],
+      ['Ton', () => { sfx.init(); sfx.toggleMute(); }],
+    ];
+    if (this.scale.fullscreen.available) buttons.push(['Vollbild', () => this.toggleFullscreen()]);
+    this.topButtons = buttons.map(([label, fn]) => this.add.text(0, 0, label, btnStyle).setScrollFactor(0).setDepth(102)
+      .setInteractive({ useHandCursor: true }).on('pointerdown', fn));
+    this.rotateHint = this.add.text(0, 0, 'Tipp: Handy quer halten', { fontFamily: 'serif', fontSize: '16px', color: '#ffe14a', stroke: '#000', strokeThickness: 3 })
+      .setOrigin(0.5, 0).setScrollFactor(0).setDepth(102).setVisible(false);
 
     this.time.addEvent({ delay: 15000, loop: true, callback: () => this.persist() });
     window.addEventListener('beforeunload', this.onUnload);
@@ -183,13 +221,19 @@ export class GameScene extends Phaser.Scene {
     this.scale.on('resize', this.layout, this);
     this.layout();
     this.startLevel();
+    if (import.meta.env.DEV) (window as unknown as { __scene: GameScene }).__scene = this; // test hook, stripped from production builds
   }
 
   private layout() {
-    const { width, height } = this.scale;
-    this.banner.setPosition(width / 2, height / 2);
-    this.pauseText.setPosition(width / 2, height / 2);
-    (this.children.getByName('miniImg') as Phaser.GameObjects.Image).setPosition(width - 12, 12);
+    const { width, height } = this.scale, c = this.compact;
+    this.miniScale = c ? 2 : 3;
+    (this.children.getByName('miniImg') as Phaser.GameObjects.Image).setScale(this.miniScale).setPosition(width - 12, 12);
+    this.banner.setPosition(width / 2, height / 2).setWordWrapWidth(width - 40);
+    this.pauseUI.setPosition(width / 2, height / 2);
+    this.depthText.setPosition(12, 8);
+    this.topButtons.forEach((b, i) => b.setFontSize(c ? 18 : 16).setPosition(12, 38 + i * (c ? 40 : 32)));
+    const touch = this.sys.game.device.input.touch;
+    this.rotateHint.setPosition(width / 2, 8).setVisible(touch && height > width);
   }
 
   // ---------- Textures ----------
@@ -298,22 +342,26 @@ export class GameScene extends Phaser.Scene {
     if (this.dead) { this.respawn(); return; }
     const wx = p.worldX, wy = p.worldY;
     const dist = (ax: number, ay: number) => Phaser.Math.Distance.Between(ax, ay, wx, wy);
-    this.target = null; this.pickup = null; this.toStairs = false;
+    this.target = null; this.pickup = null; this.toStairs = false; this.holdPointer = null;
+    const tol = p.wasTouch ? 16 : 0; // fingers are less precise than a mouse
 
-    const enemy = this.enemies.find(e => dist(e.sprite.x, e.sprite.y) < 18 * e.size);
+    const enemy = this.enemies.find(e => dist(e.sprite.x, e.sprite.y) < 18 * e.size + tol);
     if (enemy) { this.target = enemy; this.marker.setVisible(false); this.pathTo(enemy.sprite.x, enemy.sprite.y); return; }
-    const loot = this.ground.find(g => dist(g.box.x, g.box.y) < 22);
+    const loot = this.ground.find(g => dist(g.box.x, g.box.y) < 22 + tol);
     if (loot) { this.pickup = loot; this.marker.setVisible(false); this.pathTo(loot.box.x, loot.box.y); return; }
-    if (this.stairs && dist(this.stairs.x, this.stairs.y) < 24) {
+    if (this.stairs && dist(this.stairs.x, this.stairs.y) < 24 + tol) {
       this.toStairs = true; this.marker.setVisible(false); this.pathTo(this.stairs.x, this.stairs.y); return;
     }
     this.pathTo(wx, wy);
     this.marker.setPosition(wx, wy).setVisible(true);
+    this.holdPointer = p; // keep walking toward the pointer while it stays pressed
   }
 
-  private pathTo(wx: number, wy: number) {
-    this.path = findPath(this.dungeon.grid, Math.floor(this.player.x / TILE), Math.floor(this.player.y / TILE),
-      Math.floor(wx / TILE), Math.floor(wy / TILE)) ?? [];
+  private pathTo(wx: number, wy: number, keepOnFail = false) {
+    const found = findPath(this.dungeon.grid, Math.floor(this.player.x / TILE), Math.floor(this.player.y / TILE),
+      Math.floor(wx / TILE), Math.floor(wy / TILE));
+    if (found) this.path = found;
+    else if (!keepOnFail) this.path = [];
   }
 
   // ---------- Combat ----------
@@ -363,7 +411,7 @@ export class GameScene extends Phaser.Scene {
   private win() {
     sfx.play('win');
     this.victory = true;
-    this.banner.setText('SIEG!\nDer Fürst der Tiefe ist gefallen.\nKlicken: nächster Durchgang (schwerer)').setColor('#ffe14a').setFontSize(30).setVisible(true);
+    this.showBanner('SIEG!\nDer Fürst der Tiefe ist gefallen.\nTippen: nächster Durchgang (schwerer)', '#ffe14a', 30);
   }
 
   private useSkill(i: number) {
@@ -416,7 +464,7 @@ export class GameScene extends Phaser.Scene {
     if (s.hp <= 0) {
       sfx.play('death');
       s.hp = 0; this.dead = true; this.path = []; this.target = null; this.pickup = null; this.toStairs = false;
-      this.banner.setText('Du bist gestorben\nKlicken zum Wiederbeleben').setColor('#b01010').setFontSize(40).setVisible(true);
+      this.showBanner('Du bist gestorben\nTippen zum Wiederbeleben', '#b01010', 40);
     }
   }
 
@@ -508,6 +556,18 @@ export class GameScene extends Phaser.Scene {
   update(time: number, delta: number) {
     if (this.dead || this.victory || this.paused) return;
     const dt = Math.min(delta, 50) / 1000, s = this.state;
+    const hp = this.holdPointer;
+    if (hp?.isDown && !this.target && !this.pickup && !this.toStairs && time >= this.nextHold) {
+      this.nextHold = time + 100;
+      hp.updateWorldPoint(this.cameras.main);
+      this.pathTo(hp.worldX, hp.worldY, true);
+      this.marker.setPosition(hp.worldX, hp.worldY).setVisible(true);
+    }
+    if (time >= this.nextMusicCheck) {
+      this.nextMusicCheck = time + 400;
+      const near = this.enemies.filter(e => Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, this.player.x, this.player.y) < 280);
+      sfx.setIntensity(near.some(e => e.type.key === 'boss') ? 1 : near.length / 4);
+    }
     this.updatePlayer(time, dt);
     this.updateEnemies(time, dt);
     this.updateProjectiles(dt);
@@ -673,12 +733,12 @@ export class GameScene extends Phaser.Scene {
 
   private drawMiniOverlay() {
     const { width } = this.scale, g = this.miniOverlay;
-    const ox = width - 12 - MAP_W * MINI, oy = 12;
+    const ox = width - 12 - MAP_W * this.miniScale, oy = 12;
     g.clear();
-    g.fillStyle(0x000000, 0.45).fillRect(ox, oy, MAP_W * MINI, MAP_H * MINI);
-    g.lineStyle(2, 0x6b5a3a).strokeRect(ox, oy, MAP_W * MINI, MAP_H * MINI);
+    g.fillStyle(0x000000, 0.45).fillRect(ox, oy, MAP_W * this.miniScale, MAP_H * this.miniScale);
+    g.lineStyle(2, 0x6b5a3a).strokeRect(ox, oy, MAP_W * this.miniScale, MAP_H * this.miniScale);
     const dot = (wx: number, wy: number, color: number, size: number) =>
-      g.fillStyle(color).fillRect(ox + (wx / TILE) * MINI - size / 2, oy + (wy / TILE) * MINI - size / 2, size, size);
+      g.fillStyle(color).fillRect(ox + (wx / TILE) * this.miniScale - size / 2, oy + (wy / TILE) * this.miniScale - size / 2, size, size);
     if (this.stairs && this.explored[Math.floor(this.stairs.y / TILE)]?.[Math.floor(this.stairs.x / TILE)]) dot(this.stairs.x, this.stairs.y, 0xffd060, 5);
     for (const e of this.enemies) {
       if (this.explored[Math.floor(e.sprite.y / TILE)]?.[Math.floor(e.sprite.x / TILE)]) dot(e.sprite.x, e.sprite.y, e.type.key === 'boss' ? 0xc060ff : 0xd02020, 3);
@@ -701,30 +761,37 @@ export class GameScene extends Phaser.Scene {
   }
 
   private drawHud(time: number) {
-    const { width, height } = this.scale, s = this.state, r = 52, m = 20, g = this.hud;
+    const { width, height } = this.scale, s = this.state, g = this.hud;
+    const c = this.compact, r = c ? 36 : 52, m = c ? 10 : 20;
+    const touch = this.sys.game.device.input.touch;
+    const orbY = height - m - r - 4;
     g.clear();
-    this.orb(m + r + 4, height - m - r - 4, r, s.hp / s.maxHp, 0xb01818);
-    this.orb(width - m - r - 4, height - m - r - 4, r, s.mana / s.maxMana, 0x1c4fc0);
+    this.orb(m + r + 4, orbY, r, s.hp / s.maxHp, 0xb01818);
+    this.orb(width - m - r - 4, orbY, r, s.mana / s.maxMana, 0x1c4fc0);
 
     this.potionHud.forEach((p, i) => {
       const kind = i === 0 ? 'life' : 'mana';
-      const x = i === 0 ? m + r + 4 : width - m - r - 4, y = height - m - 2 * r - 34;
+      const x = i === 0 ? m + r + 4 : width - m - r - 4, y = orbY - r - (c ? 34 : 34);
       const n = s.potions[kind];
-      p.icon.setPosition(x, y).setAlpha(n > 0 ? 1 : 0.35);
-      p.text.setPosition(x, y + 16).setText(`${i === 0 ? 'Q' : 'E'} · ${n}`);
+      p.icon.setScale(c ? 2.6 : 2).setPosition(x, y).setAlpha(n > 0 ? 1 : 0.35);
+      p.text.setPosition(x, y + (c ? 22 : 17)).setText(touch ? `× ${n}` : `${i === 0 ? 'Q' : 'E'} · ${n}`);
     });
 
-    const size = 48, gap = 8, total = SKILLS.length * size + (SKILLS.length - 1) * gap;
-    const x0 = width / 2 - total / 2, y0 = height - m - size;
+    const size = c ? 58 : 48, gap = c ? 10 : 8, total = SKILLS.length * size + (SKILLS.length - 1) * gap;
+    // On a narrow (portrait) screen the skill bar would collide with the orbs, so it moves above them.
+    const narrow = width < 2 * (2 * r + 2 * m + 12) + total + 24;
+    const x0 = width / 2 - total / 2, y0 = narrow ? orbY - r - 8 - size - 40 : height - m - size;
     SKILLS.forEach((sk, i) => {
       const x = x0 + i * (size + gap);
       this.skillZones[i].setPosition(x, y0).setSize(size, size);
+      (this.skillZones[i].input!.hitArea as Phaser.Geom.Rectangle).setSize(size, size);
       const ready = time >= this.skillReadyAt[i];
       g.fillStyle(0x181210).fillRect(x, y0, size, size);
       g.fillStyle(ready && s.mana >= sk.mana ? 0x7a5a2a : 0x3a302a).fillRect(x + 4, y0 + 4, size - 8, size - 8);
       if (!ready) g.fillStyle(0x000000, 0.7).fillRect(x + 4, y0 + 4, size - 8, (size - 8) * ((this.skillReadyAt[i] - time) / sk.cooldown));
       g.lineStyle(2, i === 2 && time < this.buffUntil ? 0xffa060 : 0x6b5a3a).strokeRect(x, y0, size, size);
-      this.skillLabels[i].setPosition(x + 4, y0 + 2);
+      this.skillIcons[i].setScale(c ? 2.4 : 2).setPosition(x + size / 2, y0 + size / 2).setAlpha(ready && s.mana >= sk.mana ? 1 : 0.5);
+      this.skillLabels[i].setFontSize(c ? 16 : 14).setPosition(x + 4, y0 + 2);
     });
 
     const bw = total + 100, bx = width / 2 - bw / 2, by = y0 - 14;
@@ -738,7 +805,7 @@ export class GameScene extends Phaser.Scene {
     // Boss bar
     const boss = this.enemies.find(e => e.type.key === 'boss');
     if (boss && Phaser.Math.Distance.Between(boss.sprite.x, boss.sprite.y, this.player.x, this.player.y) < boss.type.aggro) {
-      const w = Math.min(500, width - 260), x = width / 2 - w / 2;
+      const w = Phaser.Math.Clamp(width - 2 * (this.miniScale * 64 + 24), 120, 500), x = width / 2 - w / 2;
       g.fillStyle(0x000000, 0.8).fillRect(x, 16, w, 14);
       g.fillStyle(0x8a1c3c).fillRect(x, 16, w * Math.max(0, boss.hp / boss.maxHp), 14);
       g.lineStyle(2, 0x6b5a3a).strokeRect(x, 16, w, 14);
