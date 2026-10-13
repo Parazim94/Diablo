@@ -6,6 +6,7 @@ class AudioFx {
   private master!: GainNode;
   private music: Music | null = null;
   muted = false;
+  private unlocked = false;
 
   /** Must be called from a user gesture (click/key) before anything is audible. */
   init() {
@@ -22,6 +23,42 @@ class AudioFx {
       });
     }
     if (this.ctx.state === 'suspended') void this.ctx.resume();
+  }
+
+  /**
+   * Mobile browsers only allow audio to start from "activation" events. A touch's pointerdown is not one,
+   * but touchend / pointerup / click are – so resume the context from those, for the whole session.
+   */
+  installUnlock() {
+    const unlock = () => {
+      this.init();
+      const c = this.ctx;
+      if (!c) return;
+      if (c.state !== 'running') void c.resume();
+      if (!this.unlocked) {
+        this.unlocked = true;
+        // A one-sample silent buffer fully unlocks iOS; the looping <audio> keeps iOS from muting Web Audio in silent mode.
+        const src = c.createBufferSource(); src.buffer = c.createBuffer(1, 1, 22050); src.connect(c.destination); src.start(0);
+        try { (navigator as unknown as { audioSession?: { type: string } }).audioSession!.type = 'playback'; } catch { /* unsupported */ }
+        this.startSilentLoop();
+      }
+    };
+    for (const ev of ['touchend', 'pointerup', 'click', 'keydown'] as const) window.addEventListener(ev, unlock, true);
+  }
+
+  private startSilentLoop() {
+    try {
+      const rate = 8000, n = 800;
+      const bytes = new Uint8Array(44 + n).fill(128);
+      const v = new DataView(bytes.buffer);
+      const w = (o: number, t: string) => [...t].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+      w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true);
+      v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate, true);
+      v.setUint16(32, 1, true); v.setUint16(34, 8, true); w(36, 'data'); v.setUint32(40, n, true);
+      const el = new Audio(URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' })));
+      el.loop = true; el.volume = 0.01; el.setAttribute('playsinline', '');
+      void el.play().catch(() => {});
+    } catch { /* not critical */ }
   }
 
   toggleMute() {

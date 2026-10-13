@@ -30,7 +30,7 @@ export class Music {
 
   constructor(private ctx: BaseAudioContext, out: AudioNode) {
     this.bus = ctx.createGain();
-    this.bus.gain.value = 0.7;
+    this.bus.gain.value = 1.3;
     this.bus.connect(out);
 
     // Dotted-eighth echo gives plucks and bells their space.
@@ -92,14 +92,18 @@ export class Music {
     }
 
     // Bass: root on 1 and the "and" of 3
+    // Upper octaves carry the bass line on small phone speakers, which can't reproduce the fundamental.
     this.osc('sine', hz(chord.root), t, BEAT * 1.6, this.bus, 0.2, 0.02, BEAT * 1.0, 0.7);
-    this.osc('triangle', hz(chord.root + 12), t, BEAT, this.bus, 0.04, 0.02, BEAT * 0.5, 0.4);
+    this.osc('triangle', hz(chord.root + 12), t, BEAT * 1.6, this.bus, 0.12, 0.02, BEAT * 0.9, 0.6);
+    this.osc('triangle', hz(chord.root + 24), t, BEAT, this.bus, 0.05, 0.02, BEAT * 0.5, 0.4);
     this.osc('sine', hz(chord.root), t + BEAT * 2.5, BEAT, this.bus, 0.14, 0.02, BEAT * 0.5, 0.5);
+    this.osc('triangle', hz(chord.root + 12), t + BEAT * 2.5, BEAT, this.bus, 0.09, 0.02, BEAT * 0.4, 0.4);
 
     // Taiko: always on beat 1; more hits when the fight heats up
     const taiko = (at: number, vol: number) => {
       this.osc('sine', 120, at, 0.4, this.bus, vol, 0.004, 0.02, 0.4, 42);
-      this.osc('triangle', 240, at, 0.2, this.bus, vol * 0.35, 0.004, 0.01, 0.18, 90);
+      this.osc('triangle', 240, at, 0.25, this.bus, vol * 0.7, 0.004, 0.01, 0.22, 90); // mid "skin" tone audible on phones
+      this.osc('triangle', 420, at, 0.08, this.bus, vol * 0.3, 0.002, 0.005, 0.07, 200);
     };
     taiko(t, 0.36);
     if (intensity > 0.25) taiko(t + BEAT * 2, 0.26);
