@@ -1,24 +1,33 @@
 import Phaser from 'phaser';
 import { TILE, MAP_W, MAP_H, generateDungeon, findPath, Dungeon } from '../dungeon';
 import { PlayerState } from '../state';
-import { Item, generateItem, RARITY_COLOR, RARITY_CSS } from '../items';
+import { Item, generateItem, rollRarity, RARITY_COLOR, RARITY_CSS } from '../items';
+import { EnemyType, TYPES, MAX_DEPTH, pickType } from '../enemies';
 import { InventoryPanel } from '../ui/InventoryPanel';
 
 interface Enemy {
+  type: EnemyType;
   sprite: Phaser.GameObjects.Image;
   bar: Phaser.GameObjects.Graphics;
   hp: number;
   maxHp: number;
+  dmgMult: number;
+  radius: number;
+  elite: boolean;
   nextAttack: number;
+  nextNova: number;
   home: { x: number; y: number };
 }
+
+interface Projectile { s: Phaser.GameObjects.Arc; vx: number; vy: number; dmg: number; life: number }
 
 interface GroundItem { item: Item; box: Phaser.GameObjects.Rectangle; label: Phaser.GameObjects.Text }
 
 interface Skill { key: string; name: string; mana: number; cooldown: number }
 
 const PLAYER = { speed: 170, range: 40, cooldown: 550, radius: 10 };
-const ENEMY = { speed: 90, aggro: 220, range: 28, cooldown: 900, dmg: [3, 7], hp: 30, radius: 10, xp: 25, dropChance: 0.4 };
+const DROP_CHANCE = 0.35;
+const MINI = 3; // minimap pixels per tile
 const PICKUP_RADIUS = 30;
 const SKILLS: Skill[] = [
   { key: '1', name: 'Wuchtschlag', mana: 8, cooldown: 1500 },
@@ -33,18 +42,30 @@ export class GameScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Image;
   private enemies: Enemy[] = [];
   private ground: GroundItem[] = [];
+  private projectiles: Projectile[] = [];
+  private levelObjs: Phaser.GameObjects.GameObject[] = [];
+  private stairs: { x: number; y: number } | null = null;
   private path: { x: number; y: number }[] = [];
   private target: Enemy | null = null;
   private pickup: GroundItem | null = null;
+  private toStairs = false;
   private nextAttack = 0;
   private nextRepath = 0;
   private skillReadyAt = [0, 0, 0];
   private buffUntil = 0;
+  private depth_ = 1;
+  private loop = 0;
   private dead = false;
+  private victory = false;
+  private explored: boolean[][] = [];
+  private lastTile = '';
+  private mini!: Phaser.Textures.CanvasTexture;
+  private miniOverlay!: Phaser.GameObjects.Graphics;
   private hud!: Phaser.GameObjects.Graphics;
   private hudText!: Phaser.GameObjects.Text;
+  private depthText!: Phaser.GameObjects.Text;
   private skillLabels: Phaser.GameObjects.Text[] = [];
-  private deathText!: Phaser.GameObjects.Text;
+  private banner!: Phaser.GameObjects.Text;
   private marker!: Phaser.GameObjects.Arc;
   private panel!: InventoryPanel;
 
@@ -52,45 +73,73 @@ export class GameScene extends Phaser.Scene {
 
   create() {
     this.makeTextures();
-    this.buildLevel();
-    this.hud = this.add.graphics().setScrollFactor(0).setDepth(100);
-    this.hudText = this.add.text(0, 0, '', { fontFamily: 'serif', fontSize: '15px', color: '#d8cdb4', stroke: '#000', strokeThickness: 3 })
-      .setOrigin(0.5, 1).setScrollFactor(0).setDepth(102);
-    this.skillLabels = SKILLS.map(s => this.add.text(0, 0, s.key, { fontFamily: 'serif', fontSize: '14px', color: '#fff', stroke: '#000', strokeThickness: 3 })
-      .setScrollFactor(0).setDepth(102));
-    this.deathText = this.add.text(0, 0, 'Du bist gestorben\nKlicken zum Wiederbeleben', {
-      fontFamily: 'serif', fontSize: '40px', color: '#b01010', align: 'center', stroke: '#000', strokeThickness: 6,
-    }).setOrigin(0.5).setScrollFactor(0).setDepth(250).setVisible(false);
-    this.marker = this.add.circle(0, 0, 6, 0xffd060, 0.8).setVisible(false).setDepth(1);
-    this.panel = new InventoryPanel(this, this.state, item => this.dropItem(this.player.x, this.player.y, item));
+    this.player = this.add.image(0, 0, 'player').setDepth(10);
+    this.cameras.main.startFollow(this.player, true, 0.12, 0.12);
+    this.cameras.main.setBounds(0, 0, MAP_W * TILE, MAP_H * TILE);
 
+    this.hud = this.add.graphics().setScrollFactor(0).setDepth(100);
+    const txt = { fontFamily: 'serif', fontSize: '15px', color: '#d8cdb4', stroke: '#000', strokeThickness: 3 };
+    this.hudText = this.add.text(0, 0, '', txt).setOrigin(0.5, 1).setScrollFactor(0).setDepth(102);
+    this.depthText = this.add.text(16, 12, '', { ...txt, fontSize: '18px' }).setScrollFactor(0).setDepth(102);
+    this.skillLabels = SKILLS.map(sk => this.add.text(0, 0, sk.key, { ...txt, color: '#fff', fontSize: '14px' }).setScrollFactor(0).setDepth(102));
+    this.banner = this.add.text(0, 0, '', { fontFamily: 'serif', fontSize: '40px', color: '#b01010', align: 'center', stroke: '#000', strokeThickness: 6 })
+      .setOrigin(0.5).setScrollFactor(0).setDepth(250).setVisible(false);
+    this.marker = this.add.circle(0, 0, 6, 0xffd060, 0.8).setVisible(false).setDepth(1);
+
+    this.mini = this.textures.createCanvas('minimap', MAP_W, MAP_H)!;
+    this.mini.setFilter(Phaser.Textures.FilterMode.NEAREST);
+    this.add.image(0, 0, 'minimap').setOrigin(1, 0).setScale(MINI).setScrollFactor(0).setDepth(100).setName('miniImg');
+    this.miniOverlay = this.add.graphics().setScrollFactor(0).setDepth(101);
+
+    this.panel = new InventoryPanel(this, this.state, item => this.dropItem(this.player.x, this.player.y, item));
     this.input.mouse?.disableContextMenu();
     this.input.on('pointerdown', (p: Phaser.Input.Pointer, over: unknown[]) => { if (!over.length) this.onClick(p); });
     this.input.keyboard!.on('keydown-I', () => this.panel.toggle());
     this.input.keyboard!.on('keydown-C', () => this.panel.toggle());
     this.input.keyboard!.on('keydown-ESC', () => { if (this.panel.visible) this.panel.toggle(); });
     SKILLS.forEach((_, i) => this.input.keyboard!.on(`keydown-${i + 1}`, () => this.useSkill(i)));
-    this.scale.on('resize', () => this.deathText.setPosition(this.scale.width / 2, this.scale.height / 2));
-    this.deathText.setPosition(this.scale.width / 2, this.scale.height / 2);
+    this.scale.on('resize', () => this.layout());
+    this.layout();
+    this.startLevel();
   }
 
-  // ---------- Setup ----------
+  private layout() {
+    const { width, height } = this.scale;
+    this.banner.setPosition(width / 2, height / 2);
+    (this.children.getByName('miniImg') as Phaser.GameObjects.Image).setPosition(width - 12, 12);
+  }
+
+  // ---------- Textures ----------
   private makeTextures() {
     const g = this.make.graphics({}, false);
     const tex = (key: string, size: number, draw: () => void) => { g.clear(); draw(); g.generateTexture(key, size, size); };
-    tex('floor', TILE, () => {
-      g.fillStyle(0x2b2522).fillRect(0, 0, TILE, TILE);
-      g.lineStyle(1, 0x1d1815).strokeRect(0.5, 0.5, TILE - 1, TILE - 1);
-      g.fillStyle(0x332c28).fillRect(4, 4, 6, 4).fillRect(18, 20, 8, 4);
+
+    // Floor/wall palettes shift with depth so each level feels different.
+    const palettes = [
+      { floor: 0x2b2522, dot: 0x332c28, edge: 0x4a3f38, edgeLow: 0x3a312b },
+      { floor: 0x22282b, dot: 0x2a3236, edge: 0x3a4650, edgeLow: 0x2b353d },
+      { floor: 0x2b2224, dot: 0x36292c, edge: 0x502e34, edgeLow: 0x3d2227 },
+    ];
+    palettes.forEach((c, i) => {
+      tex(`floor${i}`, TILE, () => {
+        g.fillStyle(c.floor).fillRect(0, 0, TILE, TILE);
+        g.lineStyle(1, 0x151110).strokeRect(0.5, 0.5, TILE - 1, TILE - 1);
+        g.fillStyle(c.dot).fillRect(4, 4, 6, 4).fillRect(18, 20, 8, 4);
+      });
+      tex(`wallEdge${i}`, TILE, () => {
+        g.fillStyle(c.edge).fillRect(0, 0, TILE, TILE);
+        g.fillStyle(c.edgeLow).fillRect(0, TILE - 8, TILE, 8);
+        g.lineStyle(1, 0x1a1411).strokeRect(0.5, 0.5, TILE - 1, TILE - 1);
+      });
     });
     tex('wall', TILE, () => {
       g.fillStyle(0x0f0c0b).fillRect(0, 0, TILE, TILE);
       g.lineStyle(1, 0x070505).strokeRect(0.5, 0.5, TILE - 1, TILE - 1);
     });
-    tex('wallEdge', TILE, () => {
-      g.fillStyle(0x4a3f38).fillRect(0, 0, TILE, TILE);
-      g.fillStyle(0x3a312b).fillRect(0, TILE - 8, TILE, 8);
-      g.lineStyle(1, 0x1a1411).strokeRect(0.5, 0.5, TILE - 1, TILE - 1);
+    tex('stairs', TILE, () => {
+      g.fillStyle(0x0a0707).fillRect(0, 0, TILE, TILE);
+      for (let i = 0; i < 5; i++) g.fillStyle(0x3a2e24 + i * 0x0a0805).fillRect(2 + i * 2, 2 + i * 6, TILE - 4 - i * 4, 5);
+      g.lineStyle(2, 0xffd060).strokeRect(1, 1, TILE - 2, TILE - 2);
     });
     tex('player', 32, () => {
       g.fillStyle(0x000000, 0.35).fillEllipse(16, 26, 22, 8);
@@ -98,62 +147,102 @@ export class GameScene extends Phaser.Scene {
       g.fillStyle(0xb02020).fillCircle(16, 16, 6);
       g.fillStyle(0xdddddd).fillRect(24, 13, 8, 3);
     });
-    tex('enemy', 32, () => {
-      g.fillStyle(0x000000, 0.35).fillEllipse(16, 26, 22, 8);
-      g.fillStyle(0x5c7a3a).fillCircle(16, 16, 11);
-      g.fillStyle(0xe8e060).fillCircle(12, 13, 2).fillCircle(20, 13, 2);
-    });
+    for (const t of Object.values(TYPES)) {
+      tex(`enemy_${t.key}`, 32, () => {
+        g.fillStyle(0x000000, 0.35).fillEllipse(16, 26, 22, 8);
+        g.fillStyle(t.body).fillCircle(16, 16, 11);
+        g.fillStyle(t.eye).fillCircle(12, 13, 2).fillCircle(20, 13, 2);
+        if (t.ranged) g.lineStyle(2, 0xc8a060).strokeCircle(26, 16, 5);
+      });
+    }
     g.destroy();
   }
 
-  private buildLevel() {
+  // ---------- Level ----------
+  private get paletteIndex() { return (this.depth_ - 1) % 3; }
+
+  private startLevel() {
+    for (const o of this.levelObjs) o.destroy();
+    this.levelObjs = [];
+    for (const e of this.enemies) { e.sprite.destroy(); e.bar.destroy(); }
+    for (const g of this.ground) { g.box.destroy(); g.label.destroy(); }
+    for (const p of this.projectiles) p.s.destroy();
+    this.enemies = []; this.ground = []; this.projectiles = [];
+    this.path = []; this.target = null; this.pickup = null; this.toStairs = false; this.stairs = null;
+    this.marker.setVisible(false);
+
     this.dungeon = generateDungeon();
     const { grid, rooms } = this.dungeon;
+    const pal = this.paletteIndex;
+    const add = (o: Phaser.GameObjects.Image) => { this.levelObjs.push(o); return o; };
     for (let y = 0; y < MAP_H; y++) {
       for (let x = 0; x < MAP_W; x++) {
-        if (grid[y][x]) { this.add.image(x * TILE, y * TILE, 'floor').setOrigin(0); continue; }
+        if (grid[y][x]) { add(this.add.image(x * TILE, y * TILE, `floor${pal}`).setOrigin(0)); continue; }
         const nearFloor = [[0, 1], [1, 0], [-1, 0], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]
           .some(([dx, dy]) => grid[y + dy]?.[x + dx]);
-        if (nearFloor) this.add.image(x * TILE, y * TILE, grid[y + 1]?.[x] ? 'wallEdge' : 'wall').setOrigin(0);
+        if (nearFloor) add(this.add.image(x * TILE, y * TILE, grid[y + 1]?.[x] ? `wallEdge${pal}` : 'wall').setOrigin(0));
       }
     }
-    const start = rooms[0];
-    this.player = this.add.image((start.x + start.w / 2) * TILE, (start.y + start.h / 2) * TILE, 'player').setDepth(10);
-    this.cameras.main.startFollow(this.player, true, 0.12, 0.12);
-    this.cameras.main.setBounds(0, 0, MAP_W * TILE, MAP_H * TILE);
+
+    const start = rooms[0], last = rooms[rooms.length - 1];
+    this.player.setPosition((start.x + start.w / 2) * TILE, (start.y + start.h / 2) * TILE);
+    const isBossLevel = this.depth_ >= MAX_DEPTH;
+    const cx = (last.x + last.w / 2) * TILE, cy = (last.y + last.h / 2) * TILE;
+
+    if (isBossLevel) {
+      this.spawnEnemy(TYPES.boss, cx, cy, false);
+    } else {
+      this.stairs = { x: Math.floor(cx / TILE) * TILE + TILE / 2, y: Math.floor(cy / TILE) * TILE + TILE / 2 };
+      add(this.add.image(this.stairs.x, this.stairs.y, 'stairs').setDepth(2));
+    }
 
     for (const room of rooms.slice(1)) {
-      const n = Phaser.Math.Between(2, 4);
+      const n = Phaser.Math.Between(2, 4) + Math.floor(this.depth_ / 3);
       for (let i = 0; i < n; i++) {
-        this.spawnEnemy((room.x + 1 + Math.random() * (room.w - 2)) * TILE, (room.y + 1 + Math.random() * (room.h - 2)) * TILE);
+        const x = (room.x + 1 + Math.random() * (room.w - 2)) * TILE, y = (room.y + 1 + Math.random() * (room.h - 2)) * TILE;
+        if (isBossLevel && room === last && Phaser.Math.Distance.Between(x, y, cx, cy) < 90) continue;
+        this.spawnEnemy(pickType(this.depth_), x, y, Math.random() < 0.1);
       }
     }
+
+    this.explored = Array.from({ length: MAP_H }, () => Array(MAP_W).fill(false));
+    this.mini.context.clearRect(0, 0, MAP_W, MAP_H);
+    this.mini.refresh();
+    this.lastTile = '';
+    this.cameras.main.fadeIn(350, 0, 0, 0);
+    this.floatText(this.player.x, this.player.y - 50, isBossLevel ? 'Ebene ' + this.depth_ + ' – Der Fürst erwartet dich' : 'Ebene ' + this.depth_, '#e8d9a8', 22);
   }
 
-  private spawnEnemy(x: number, y: number) {
-    const sprite = this.add.image(x, y, 'enemy').setDepth(9);
-    this.enemies.push({ sprite, bar: this.add.graphics().setDepth(9), hp: ENEMY.hp, maxHp: ENEMY.hp, nextAttack: 0, home: { x, y } });
+  private get scaling() { return 1 + 0.25 * (this.depth_ - 1) + 0.6 * this.loop; }
+
+  private spawnEnemy(type: EnemyType, x: number, y: number, elite: boolean) {
+    const boss = type.key === 'boss';
+    const scale = boss ? 2.2 : elite ? 1.3 : 1;
+    const hpMult = this.scaling * (elite ? 2.5 : 1);
+    const sprite = this.add.image(x, y, `enemy_${type.key}`).setDepth(9).setScale(scale);
+    if (elite) sprite.setTint(0xffe080);
+    const hp = Math.round(type.hp * hpMult);
+    this.enemies.push({
+      type, sprite, bar: this.add.graphics().setDepth(9), hp, maxHp: hp, elite,
+      dmgMult: this.scaling * (elite ? 1.5 : 1), radius: 10 * scale, nextAttack: 0, nextNova: 3000, home: { x, y },
+    });
   }
 
   // ---------- Input ----------
   private onClick(p: Phaser.Input.Pointer) {
+    if (this.victory) { this.loop++; this.depth_ = 1; this.victory = false; this.banner.setVisible(false); this.startLevel(); return; }
     if (this.dead) { this.respawn(); return; }
     const wx = p.worldX, wy = p.worldY;
     const dist = (ax: number, ay: number) => Phaser.Math.Distance.Between(ax, ay, wx, wy);
+    this.target = null; this.pickup = null; this.toStairs = false;
 
-    const enemy = this.enemies.find(e => dist(e.sprite.x, e.sprite.y) < 18);
-    if (enemy) {
-      this.target = enemy; this.pickup = null; this.marker.setVisible(false);
-      this.pathTo(enemy.sprite.x, enemy.sprite.y);
-      return;
-    }
+    const enemy = this.enemies.find(e => dist(e.sprite.x, e.sprite.y) < 18 * (e.sprite.scale));
+    if (enemy) { this.target = enemy; this.marker.setVisible(false); this.pathTo(enemy.sprite.x, enemy.sprite.y); return; }
     const loot = this.ground.find(g => dist(g.box.x, g.box.y) < 22);
-    if (loot) {
-      this.pickup = loot; this.target = null; this.marker.setVisible(false);
-      this.pathTo(loot.box.x, loot.box.y);
-      return;
+    if (loot) { this.pickup = loot; this.marker.setVisible(false); this.pathTo(loot.box.x, loot.box.y); return; }
+    if (this.stairs && dist(this.stairs.x, this.stairs.y) < 24) {
+      this.toStairs = true; this.marker.setVisible(false); this.pathTo(this.stairs.x, this.stairs.y); return;
     }
-    this.target = null; this.pickup = null;
     this.pathTo(wx, wy);
     this.marker.setPosition(wx, wy).setVisible(true);
   }
@@ -176,38 +265,54 @@ export class GameScene extends Phaser.Scene {
   private hitEnemy(e: Enemy, mult = 1) {
     const { dmg, crit } = this.rollDamage(mult);
     e.hp -= dmg;
-    this.floatText(e.sprite.x, e.sprite.y - 20, crit ? `${dmg}!` : String(dmg), crit ? '#ffd040' : '#ffffff', crit ? 22 : 16);
+    this.floatText(e.sprite.x, e.sprite.y - 20 * e.sprite.scale, crit ? `${dmg}!` : String(dmg), crit ? '#ffd040' : '#ffffff', crit ? 22 : 16);
     this.tweens.add({ targets: e.sprite, alpha: 0.4, duration: 60, yoyo: true });
     if (e.hp <= 0) this.killEnemy(e);
   }
 
   private killEnemy(e: Enemy) {
-    const { x, y } = e.sprite;
+    const { x, y } = e.sprite, boss = e.type.key === 'boss';
     e.sprite.destroy(); e.bar.destroy();
     this.enemies = this.enemies.filter(o => o !== e);
     if (this.target === e) this.target = null;
-    if (this.state.addXp(ENEMY.xp)) {
-      this.floatText(this.player.x, this.player.y - 40, 'STUFENAUFSTIEG!', '#ffe14a', 22);
+
+    const xp = Math.round(e.type.xp * (e.elite ? 4 : 1) * (1 + 0.15 * (this.depth_ - 1)));
+    if (this.state.addXp(xp)) this.floatText(this.player.x, this.player.y - 40, 'STUFENAUFSTIEG!', '#ffe14a', 22);
+
+    const ilvl = this.state.level + this.depth_;
+    if (boss) {
+      for (let i = 0; i < 3; i++) this.dropItem(x, y, generateItem(ilvl + 2, i === 0 ? 'legendary' : 'rare'));
+      this.time.delayedCall(1500, () => this.win());
+    } else if (e.elite) {
+      this.dropItem(x, y, generateItem(ilvl, rollRarity(25)));
+      if (Math.random() < 0.5) this.dropItem(x, y, generateItem(ilvl, rollRarity(10)));
+    } else if (Math.random() < DROP_CHANCE) {
+      this.dropItem(x, y, generateItem(ilvl));
     }
-    if (Math.random() < ENEMY.dropChance) this.dropItem(x, y, generateItem(this.state.level));
+  }
+
+  private win() {
+    this.victory = true;
+    this.banner.setText('SIEG!\nDer Fürst der Tiefe ist gefallen.\nKlicken: nächster Durchgang (schwerer)').setColor('#ffe14a').setFontSize(30).setVisible(true);
   }
 
   private useSkill(i: number) {
     const s = this.state, sk = SKILLS[i], now = this.time.now;
-    if (this.dead || now < this.skillReadyAt[i]) return;
+    if (this.dead || this.victory || now < this.skillReadyAt[i]) return;
     if (s.mana < sk.mana) { this.floatText(this.player.x, this.player.y - 30, 'Zu wenig Mana', '#6f8fff'); return; }
 
-    const near = (r: number) => this.enemies.filter(e => Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, this.player.x, this.player.y) <= r);
-    if (i === 0) { // Wuchtschlag: single target, heavy hit
-      const t = this.target && near(PLAYER.range * 1.5).includes(this.target) ? this.target : near(PLAYER.range * 1.5)[0];
+    const near = (r: number) => this.enemies.filter(e => Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, this.player.x, this.player.y) <= r + e.radius);
+    if (i === 0) {
+      const reach = near(PLAYER.range * 1.5);
+      const t = this.target && reach.includes(this.target) ? this.target : reach[0];
       if (!t) return;
       this.hitEnemy(t, 2.2);
-    } else if (i === 1) { // Wirbelwind: everything around
+    } else if (i === 1) {
       const hits = near(75);
       if (!hits.length) return;
       hits.forEach(e => this.hitEnemy(e, 1.4));
       this.spin();
-    } else { // Schlachtruf: damage buff
+    } else {
       this.buffUntil = now + BUFF_MS;
       this.floatText(this.player.x, this.player.y - 30, 'Schlachtruf!', '#ff9040', 18);
     }
@@ -227,26 +332,32 @@ export class GameScene extends Phaser.Scene {
     this.floatText(this.player.x, this.player.y - 24, String(dmg), '#ff4040');
     this.cameras.main.shake(80, 0.003);
     if (s.hp <= 0) {
-      s.hp = 0; this.dead = true; this.path = []; this.target = null; this.pickup = null;
-      this.deathText.setVisible(true);
+      s.hp = 0; this.dead = true; this.path = []; this.target = null; this.pickup = null; this.toStairs = false;
+      this.banner.setText('Du bist gestorben\nKlicken zum Wiederbeleben').setColor('#b01010').setFontSize(40).setVisible(true);
     }
   }
 
   private respawn() {
     const s = this.state;
     this.dead = false;
-    this.deathText.setVisible(false);
+    this.banner.setVisible(false);
     s.hp = s.maxHp; s.mana = s.maxMana;
     const r = this.dungeon.rooms[0];
     this.player.setPosition((r.x + r.w / 2) * TILE, (r.y + r.h / 2) * TILE);
+    for (const p of this.projectiles) p.s.destroy();
+    this.projectiles = [];
     for (const e of this.enemies) { e.hp = e.maxHp; e.sprite.setPosition(e.home.x, e.home.y); }
+  }
+
+  private shoot(fromX: number, fromY: number, angle: number, dmg: number, color: number, speed = 240) {
+    const s = this.add.circle(fromX, fromY, color === 0xc060ff ? 7 : 5, color).setStrokeStyle(1, 0x000000).setDepth(12);
+    this.projectiles.push({ s, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, dmg, life: 2.5 });
   }
 
   // ---------- Loot ----------
   private dropItem(x: number, y: number, item: Item) {
     const ox = Phaser.Math.Between(-14, 14), oy = Phaser.Math.Between(-14, 14);
-    const color = RARITY_COLOR[item.rarity];
-    const box = this.add.rectangle(x + ox, y + oy, 14, 14, color).setStrokeStyle(2, 0x000000).setDepth(5);
+    const box = this.add.rectangle(x + ox, y + oy, 14, 14, RARITY_COLOR[item.rarity]).setStrokeStyle(2, 0x000000).setDepth(5);
     const label = this.add.text(x + ox, y + oy - 16, item.name, {
       fontFamily: 'serif', fontSize: '13px', color: RARITY_CSS[item.rarity], stroke: '#000', strokeThickness: 3,
     }).setOrigin(0.5).setDepth(6);
@@ -267,13 +378,15 @@ export class GameScene extends Phaser.Scene {
 
   // ---------- Game loop ----------
   update(time: number, delta: number) {
-    if (this.dead) return;
-    const dt = delta / 1000, s = this.state;
+    if (this.dead || this.victory) return;
+    const dt = Math.min(delta, 50) / 1000, s = this.state;
     this.updatePlayer(time, dt);
     this.updateEnemies(time, dt);
+    this.updateProjectiles(dt);
     s.mana = Math.min(s.maxMana, s.mana + 3 * dt);
     s.hp = Math.min(s.maxHp, s.hp + 0.5 * dt);
     this.player.setTint(time < this.buffUntil ? 0xffa060 : 0xffffff);
+    this.updateExplored();
     this.drawHud(time);
     if (this.panel.visible && Math.floor(time / 500) !== Math.floor((time - delta) / 500)) this.panel.refresh();
   }
@@ -284,7 +397,7 @@ export class GameScene extends Phaser.Scene {
     if (this.target) {
       const t = this.target;
       const d = Phaser.Math.Distance.Between(this.player.x, this.player.y, t.sprite.x, t.sprite.y);
-      if (d <= PLAYER.range) {
+      if (d <= PLAYER.range + t.radius * 0.8) {
         this.path = [];
         if (time >= this.nextAttack) {
           this.nextAttack = time + PLAYER.cooldown;
@@ -301,6 +414,12 @@ export class GameScene extends Phaser.Scene {
       if (Phaser.Math.Distance.Between(this.player.x, this.player.y, g.box.x, g.box.y) <= PICKUP_RADIUS) { this.tryPickup(g); return; }
     }
 
+    if (this.toStairs && this.stairs && Phaser.Math.Distance.Between(this.player.x, this.player.y, this.stairs.x, this.stairs.y) <= 28) {
+      this.depth_++;
+      this.startLevel();
+      return;
+    }
+
     if (this.path.length === 0) { this.marker.setVisible(false); return; }
     const wp = this.path[0];
     const tx = wp.x * TILE + TILE / 2, ty = wp.y * TILE + TILE / 2;
@@ -313,35 +432,103 @@ export class GameScene extends Phaser.Scene {
 
   private updateEnemies(time: number, dt: number) {
     for (const e of this.enemies) {
-      const d = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, this.player.x, this.player.y);
-      if (d < ENEMY.aggro && d > ENEMY.range) {
-        const a = Math.atan2(this.player.y - e.sprite.y, this.player.x - e.sprite.x);
-        const nx = e.sprite.x + Math.cos(a) * ENEMY.speed * dt;
-        const ny = e.sprite.y + Math.sin(a) * ENEMY.speed * dt;
-        if (this.canStand(nx, e.sprite.y)) e.sprite.x = nx;
-        if (this.canStand(e.sprite.x, ny)) e.sprite.y = ny;
-      } else if (d <= ENEMY.range && time >= e.nextAttack) {
-        e.nextAttack = time + ENEMY.cooldown;
-        this.damagePlayer(Phaser.Math.Between(ENEMY.dmg[0], ENEMY.dmg[1]) + Math.floor(this.state.level / 2));
+      const t = e.type, sp = e.sprite;
+      const d = Phaser.Math.Distance.Between(sp.x, sp.y, this.player.x, this.player.y);
+      const angle = Math.atan2(this.player.y - sp.y, this.player.x - sp.x);
+      const move = (dir: number) => {
+        const nx = sp.x + Math.cos(angle) * t.speed * dt * dir, ny = sp.y + Math.sin(angle) * t.speed * dt * dir;
+        if (this.canStand(nx, sp.y, e.radius)) sp.x = nx;
+        if (this.canStand(sp.x, ny, e.radius)) sp.y = ny;
+      };
+      const dmg = () => Math.round(Phaser.Math.Between(t.dmg[0], t.dmg[1]) * e.dmgMult);
+
+      if (t.ranged) {
+        if (d < t.aggro) {
+          if (d > t.range) move(1); else if (d < t.range * 0.6) move(-1);
+          if (d < t.range * 1.3 && time >= e.nextAttack) {
+            e.nextAttack = time + t.cooldown;
+            this.shoot(sp.x, sp.y, angle, dmg(), 0xe0a040);
+          }
+        }
+      } else if (d < t.aggro && d > t.range + e.radius * 0.6) {
+        move(1);
+      } else if (d <= t.range + e.radius * 0.6 && time >= e.nextAttack) {
+        e.nextAttack = time + t.cooldown;
+        this.damagePlayer(dmg());
         if (this.dead) return;
       }
+
+      // Boss: periodic ring of projectiles
+      if (t.key === 'boss' && d < t.aggro && time >= e.nextNova) {
+        e.nextNova = time + 4500;
+        for (let i = 0; i < 12; i++) this.shoot(sp.x, sp.y, (i / 12) * Math.PI * 2, Math.round(10 * e.dmgMult), 0xc060ff, 170);
+      }
+
       e.bar.clear();
-      if (e.hp < e.maxHp) {
-        e.bar.fillStyle(0x000000).fillRect(e.sprite.x - 14, e.sprite.y - 22, 28, 4);
-        e.bar.fillStyle(0xc02020).fillRect(e.sprite.x - 14, e.sprite.y - 22, 28 * (e.hp / e.maxHp), 4);
+      if (e.hp < e.maxHp || e.elite) {
+        const w = 28 * sp.scale, y = sp.y - 22 * sp.scale;
+        e.bar.fillStyle(0x000000).fillRect(sp.x - w / 2, y, w, 4);
+        e.bar.fillStyle(e.elite ? 0xffc040 : 0xc02020).fillRect(sp.x - w / 2, y, w * (e.hp / e.maxHp), 4);
       }
     }
   }
 
-  private canStand(x: number, y: number) {
-    const r = ENEMY.radius, g = this.dungeon.grid;
+  private updateProjectiles(dt: number) {
+    for (const p of this.projectiles) {
+      p.s.x += p.vx * dt; p.s.y += p.vy * dt; p.life -= dt;
+      const wall = !this.dungeon.grid[Math.floor(p.s.y / TILE)]?.[Math.floor(p.s.x / TILE)];
+      if (!wall && Phaser.Math.Distance.Between(p.s.x, p.s.y, this.player.x, this.player.y) < 14) {
+        p.life = 0;
+        this.damagePlayer(p.dmg);
+        if (this.dead) return;
+      }
+      if (wall) p.life = 0;
+    }
+    this.projectiles = this.projectiles.filter(p => { if (p.life <= 0) p.s.destroy(); return p.life > 0; });
+  }
+
+  private canStand(x: number, y: number, r: number) {
+    const g = this.dungeon.grid;
     return [[-r, -r], [r, -r], [-r, r], [r, r]].every(([ox, oy]) => g[Math.floor((y + oy) / TILE)]?.[Math.floor((x + ox) / TILE)]);
   }
 
   private floatText(x: number, y: number, text: string, color: string, size = 16) {
     const t = this.add.text(x, y, text, { fontFamily: 'serif', fontSize: `${size}px`, color, stroke: '#000', strokeThickness: 3 })
       .setOrigin(0.5).setDepth(50);
-    this.tweens.add({ targets: t, y: y - 28, alpha: 0, duration: 800, onComplete: () => t.destroy() });
+    this.tweens.add({ targets: t, y: y - 28, alpha: 0, duration: 900, onComplete: () => t.destroy() });
+  }
+
+  // ---------- Minimap ----------
+  private updateExplored() {
+    const px = Math.floor(this.player.x / TILE), py = Math.floor(this.player.y / TILE);
+    const key = `${px},${py}`;
+    if (key === this.lastTile) return;
+    this.lastTile = key;
+    const ctx = this.mini.context, R = 8;
+    ctx.fillStyle = 'rgb(140,115,75)';
+    for (let y = py - R; y <= py + R; y++) {
+      for (let x = px - R; x <= px + R; x++) {
+        if ((x - px) ** 2 + (y - py) ** 2 > R * R || this.explored[y]?.[x] !== false) continue;
+        this.explored[y][x] = true;
+        if (this.dungeon.grid[y][x]) ctx.fillRect(x, y, 1, 1);
+      }
+    }
+    this.mini.refresh();
+  }
+
+  private drawMiniOverlay() {
+    const { width } = this.scale, g = this.miniOverlay;
+    const ox = width - 12 - MAP_W * MINI, oy = 12;
+    g.clear();
+    g.fillStyle(0x000000, 0.45).fillRect(ox, oy, MAP_W * MINI, MAP_H * MINI);
+    g.lineStyle(2, 0x6b5a3a).strokeRect(ox, oy, MAP_W * MINI, MAP_H * MINI);
+    const dot = (wx: number, wy: number, color: number, size: number) =>
+      g.fillStyle(color).fillRect(ox + (wx / TILE) * MINI - size / 2, oy + (wy / TILE) * MINI - size / 2, size, size);
+    if (this.stairs && this.explored[Math.floor(this.stairs.y / TILE)]?.[Math.floor(this.stairs.x / TILE)]) dot(this.stairs.x, this.stairs.y, 0xffd060, 5);
+    for (const e of this.enemies) {
+      if (this.explored[Math.floor(e.sprite.y / TILE)]?.[Math.floor(e.sprite.x / TILE)]) dot(e.sprite.x, e.sprite.y, e.type.key === 'boss' ? 0xc060ff : 0xd02020, 3);
+    }
+    dot(this.player.x, this.player.y, 0xffffff, 4);
   }
 
   // ---------- HUD ----------
@@ -364,29 +551,34 @@ export class GameScene extends Phaser.Scene {
     this.orb(m + r + 4, height - m - r - 4, r, s.hp / s.maxHp, 0xb01818);
     this.orb(width - m - r - 4, height - m - r - 4, r, s.mana / s.maxMana, 0x1c4fc0);
 
-    // Skill bar
     const size = 48, gap = 8, total = SKILLS.length * size + (SKILLS.length - 1) * gap;
     const x0 = width / 2 - total / 2, y0 = height - m - size;
     SKILLS.forEach((sk, i) => {
       const x = x0 + i * (size + gap);
       const ready = time >= this.skillReadyAt[i];
-      const usable = ready && s.mana >= sk.mana;
       g.fillStyle(0x181210).fillRect(x, y0, size, size);
-      g.fillStyle(usable ? 0x7a5a2a : 0x3a302a).fillRect(x + 4, y0 + 4, size - 8, size - 8);
-      if (!ready) {
-        const frac = (this.skillReadyAt[i] - time) / sk.cooldown;
-        g.fillStyle(0x000000, 0.7).fillRect(x + 4, y0 + 4, size - 8, (size - 8) * frac);
-      }
+      g.fillStyle(ready && s.mana >= sk.mana ? 0x7a5a2a : 0x3a302a).fillRect(x + 4, y0 + 4, size - 8, size - 8);
+      if (!ready) g.fillStyle(0x000000, 0.7).fillRect(x + 4, y0 + 4, size - 8, (size - 8) * ((this.skillReadyAt[i] - time) / sk.cooldown));
       g.lineStyle(2, i === 2 && time < this.buffUntil ? 0xffa060 : 0x6b5a3a).strokeRect(x, y0, size, size);
       this.skillLabels[i].setPosition(x + 4, y0 + 2);
     });
 
-    // XP bar + level text
     const bw = total + 100, bx = width / 2 - bw / 2, by = y0 - 14;
     g.fillStyle(0x000000, 0.8).fillRect(bx, by, bw, 6);
     g.fillStyle(0x8a6ad0).fillRect(bx, by, bw * (s.xp / s.xpToNext), 6);
     g.lineStyle(1, 0x6b5a3a).strokeRect(bx, by, bw, 6);
     const pts = s.points > 0 ? `  ·  ${s.points} Punkte [I]` : '';
     this.hudText.setText(`Stufe ${s.level}${pts}`).setPosition(width / 2, by - 4);
+    this.depthText.setText(`Ebene ${this.depth_}/${MAX_DEPTH}` + (this.loop ? `  ·  Durchgang ${this.loop + 1}` : ''));
+
+    // Boss bar
+    const boss = this.enemies.find(e => e.type.key === 'boss');
+    if (boss && Phaser.Math.Distance.Between(boss.sprite.x, boss.sprite.y, this.player.x, this.player.y) < boss.type.aggro) {
+      const w = Math.min(500, width - 260), x = width / 2 - w / 2;
+      g.fillStyle(0x000000, 0.8).fillRect(x, 16, w, 14);
+      g.fillStyle(0x8a1c3c).fillRect(x, 16, w * Math.max(0, boss.hp / boss.maxHp), 14);
+      g.lineStyle(2, 0x6b5a3a).strokeRect(x, 16, w, 14);
+    }
+    this.drawMiniOverlay();
   }
 }
