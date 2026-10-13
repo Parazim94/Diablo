@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { PlayerState, INV_SIZE } from '../state';
 import { Item, SLOTS, Slot, SLOT_LABEL, SLOT_ABBR, STAT_LABEL, RARITY_COLOR, RARITY_CSS, StatKey } from '../items';
 
-const CELL = 44, COLS = 5, W = 540, H = 340;
+const CELL = 44, COLS = 5, W = 600, H = 350;
 const FONT = { fontFamily: 'serif', fontSize: '15px', color: '#d8cdb4' };
 
 export class InventoryPanel {
@@ -67,8 +67,8 @@ export class InventoryPanel {
     SLOTS.forEach((slot, i) => this.drawEquipSlot(slot, 190, 48 + i * 52, add));
 
     // Inventory grid
-    const gx = 270, gy = 48;
-    add(sc.add.text(gx, gy - 24, 'Inventar  (Klick: anlegen · Rechtsklick: wegwerfen)', { ...FONT, fontSize: '12px', color: '#8a806a' }));
+    const gx = 330, gy = 64;
+    add(sc.add.text(gx, gy - 22, 'Inventar  (Klick: anlegen · Rechtsklick: wegwerfen)', { ...FONT, fontSize: '12px', color: '#8a806a' }));
     for (let i = 0; i < INV_SIZE; i++) {
       const x = gx + (i % COLS) * (CELL + 4), y = gy + 4 + Math.floor(i / COLS) * (CELL + 4);
       this.drawCell(s.inventory[i], x, y, add, (p) => {

@@ -66,5 +66,19 @@ export class PlayerState {
     this.points--; this[stat]++;
   }
 
+  toJSON() {
+    return { level: this.level, xp: this.xp, points: this.points, str: this.str, vit: this.vit,
+      inventory: this.inventory, equipment: this.equipment };
+  }
+
+  static fromJSON(d: ReturnType<PlayerState['toJSON']>) {
+    const s = new PlayerState();
+    s.level = d.level ?? 1; s.xp = d.xp ?? 0; s.points = d.points ?? 0; s.str = d.str ?? 0; s.vit = d.vit ?? 0;
+    s.inventory = Array.from({ length: INV_SIZE }, (_, i) => d.inventory?.[i] ?? null);
+    s.equipment = { ...s.equipment, ...d.equipment };
+    s.hp = s.maxHp; s.mana = s.maxMana;
+    return s;
+  }
+
   private clamp() { this.hp = Math.min(this.hp, this.maxHp); }
 }

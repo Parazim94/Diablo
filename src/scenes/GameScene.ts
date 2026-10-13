@@ -4,6 +4,8 @@ import { PlayerState } from '../state';
 import { Item, generateItem, rollRarity, RARITY_COLOR, RARITY_CSS } from '../items';
 import { EnemyType, TYPES, MAX_DEPTH, pickType } from '../enemies';
 import { InventoryPanel } from '../ui/InventoryPanel';
+import { sfx } from '../audio';
+import { saveGame, loadGame } from '../save';
 
 interface Enemy {
   type: EnemyType;
@@ -57,6 +59,9 @@ export class GameScene extends Phaser.Scene {
   private loop = 0;
   private dead = false;
   private victory = false;
+  private paused = false;
+  private pauseText!: Phaser.GameObjects.Text;
+  private onUnload = () => this.persist();
   private explored: boolean[][] = [];
   private lastTile = '';
   private mini!: Phaser.Textures.CanvasTexture;
@@ -65,11 +70,35 @@ export class GameScene extends Phaser.Scene {
   private hudText!: Phaser.GameObjects.Text;
   private depthText!: Phaser.GameObjects.Text;
   private skillLabels: Phaser.GameObjects.Text[] = [];
+  private skillZones: Phaser.GameObjects.Rectangle[] = [];
   private banner!: Phaser.GameObjects.Text;
   private marker!: Phaser.GameObjects.Arc;
   private panel!: InventoryPanel;
 
   constructor() { super('Game'); }
+
+  /** Scene instances are reused by Phaser, so every field must be reset here. */
+  init(data: { load?: boolean }) {
+    const save = data?.load ? loadGame() : null;
+    this.state = save ? PlayerState.fromJSON(save.player) : new PlayerState();
+    this.depth_ = save?.depth ?? 1;
+    this.loop = save?.loop ?? 0;
+    this.enemies = []; this.ground = []; this.projectiles = []; this.levelObjs = [];
+    this.stairs = null; this.path = []; this.target = null; this.pickup = null; this.toStairs = false;
+    this.nextAttack = 0; this.nextRepath = 0; this.skillReadyAt = [0, 0, 0]; this.buffUntil = 0;
+    this.dead = false; this.victory = false; this.paused = false;
+    this.explored = []; this.lastTile = ''; this.skillLabels = [];
+  }
+
+  private persist() { if (!this.dead) saveGame(this.state, this.depth_, this.loop); }
+
+  private togglePause() {
+    if (this.dead || this.victory) return;
+    this.paused = !this.paused;
+    this.pauseText.setVisible(this.paused);
+  }
+
+  private leaveToMenu() { this.persist(); this.scene.start('Menu'); }
 
   create() {
     this.makeTextures();
@@ -82,10 +111,13 @@ export class GameScene extends Phaser.Scene {
     this.hudText = this.add.text(0, 0, '', txt).setOrigin(0.5, 1).setScrollFactor(0).setDepth(102);
     this.depthText = this.add.text(16, 12, '', { ...txt, fontSize: '18px' }).setScrollFactor(0).setDepth(102);
     this.skillLabels = SKILLS.map(sk => this.add.text(0, 0, sk.key, { ...txt, color: '#fff', fontSize: '14px' }).setScrollFactor(0).setDepth(102));
+    this.skillZones = SKILLS.map((_, i) => this.add.rectangle(0, 0, 48, 48, 0xffffff, 0.001).setOrigin(0).setScrollFactor(0).setDepth(103)
+      .setInteractive({ useHandCursor: true }).on('pointerdown', () => { sfx.init(); this.useSkill(i); }));
     this.banner = this.add.text(0, 0, '', { fontFamily: 'serif', fontSize: '40px', color: '#b01010', align: 'center', stroke: '#000', strokeThickness: 6 })
       .setOrigin(0.5).setScrollFactor(0).setDepth(250).setVisible(false);
     this.marker = this.add.circle(0, 0, 6, 0xffd060, 0.8).setVisible(false).setDepth(1);
 
+    if (this.textures.exists('minimap')) this.textures.remove('minimap');
     this.mini = this.textures.createCanvas('minimap', MAP_W, MAP_H)!;
     this.mini.setFilter(Phaser.Textures.FilterMode.NEAREST);
     this.add.image(0, 0, 'minimap').setOrigin(1, 0).setScale(MINI).setScrollFactor(0).setDepth(100).setName('miniImg');
@@ -94,11 +126,35 @@ export class GameScene extends Phaser.Scene {
     this.panel = new InventoryPanel(this, this.state, item => this.dropItem(this.player.x, this.player.y, item));
     this.input.mouse?.disableContextMenu();
     this.input.on('pointerdown', (p: Phaser.Input.Pointer, over: unknown[]) => { if (!over.length) this.onClick(p); });
-    this.input.keyboard!.on('keydown-I', () => this.panel.toggle());
-    this.input.keyboard!.on('keydown-C', () => this.panel.toggle());
-    this.input.keyboard!.on('keydown-ESC', () => { if (this.panel.visible) this.panel.toggle(); });
+    const togglePanel = () => { sfx.init(); if (this.panel.visible) this.closePanel(); else this.panel.toggle(); };
+    this.input.keyboard!.on('keydown-I', togglePanel);
+    this.input.keyboard!.on('keydown-C', togglePanel);
+    this.input.keyboard!.on('keydown-ESC', () => { if (this.panel.visible) this.closePanel(); else this.togglePause(); });
+    this.input.keyboard!.on('keydown-P', () => this.togglePause());
+    this.input.keyboard!.on('keydown-M', () => { sfx.init(); sfx.toggleMute(); });
+    this.input.keyboard!.on('keydown-Q', () => { if (this.paused) this.leaveToMenu(); });
+
+    this.pauseText = this.add.text(0, 0, 'PAUSE\n\nESC / P: weiter\nQ: Hauptmenü (speichert)', {
+      fontFamily: 'serif', fontSize: '34px', color: '#e8d9a8', align: 'center', stroke: '#000', strokeThickness: 6, lineSpacing: 6,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(260).setVisible(false);
+
+    // Clickable shortcuts (also makes the game usable on touch devices).
+    const btnStyle = { fontFamily: 'serif', fontSize: '16px', color: '#b8ad90', stroke: '#000', strokeThickness: 3 };
+    [['[Inventar]', () => this.panel.visible ? this.closePanel() : this.panel.toggle()], ['[Pause]', () => this.togglePause()],
+     ['[Ton]', () => { sfx.init(); sfx.toggleMute(); }]].forEach(([label, fn], i) => {
+      this.add.text(16 + i * 92, 42, label as string, btnStyle).setScrollFactor(0).setDepth(102).setInteractive({ useHandCursor: true })
+        .on('pointerdown', fn as () => void);
+    });
+
+    this.time.addEvent({ delay: 15000, loop: true, callback: () => this.persist() });
+    window.addEventListener('beforeunload', this.onUnload);
+    this.events.once('shutdown', () => {
+      window.removeEventListener('beforeunload', this.onUnload);
+      this.scale.off('resize', this.layout, this);
+    });
+    sfx.startMusic();
     SKILLS.forEach((_, i) => this.input.keyboard!.on(`keydown-${i + 1}`, () => this.useSkill(i)));
-    this.scale.on('resize', () => this.layout());
+    this.scale.on('resize', this.layout, this);
     this.layout();
     this.startLevel();
   }
@@ -106,11 +162,15 @@ export class GameScene extends Phaser.Scene {
   private layout() {
     const { width, height } = this.scale;
     this.banner.setPosition(width / 2, height / 2);
+    this.pauseText.setPosition(width / 2, height / 2);
     (this.children.getByName('miniImg') as Phaser.GameObjects.Image).setPosition(width - 12, 12);
   }
 
   // ---------- Textures ----------
+  private closePanel() { this.panel.toggle(); this.persist(); }
+
   private makeTextures() {
+    if (this.textures.exists('player')) return;
     const g = this.make.graphics({}, false);
     const tex = (key: string, size: number, draw: () => void) => { g.clear(); draw(); g.generateTexture(key, size, size); };
 
@@ -230,7 +290,9 @@ export class GameScene extends Phaser.Scene {
 
   // ---------- Input ----------
   private onClick(p: Phaser.Input.Pointer) {
-    if (this.victory) { this.loop++; this.depth_ = 1; this.victory = false; this.banner.setVisible(false); this.startLevel(); return; }
+    sfx.init();
+    if (this.paused) return;
+    if (this.victory) { this.loop++; this.depth_ = 1; this.persist(); this.victory = false; this.banner.setVisible(false); this.startLevel(); return; }
     if (this.dead) { this.respawn(); return; }
     const wx = p.worldX, wy = p.worldY;
     const dist = (ax: number, ay: number) => Phaser.Math.Distance.Between(ax, ay, wx, wy);
@@ -265,6 +327,8 @@ export class GameScene extends Phaser.Scene {
   private hitEnemy(e: Enemy, mult = 1) {
     const { dmg, crit } = this.rollDamage(mult);
     e.hp -= dmg;
+    sfx.play(crit ? 'crit' : 'hit');
+    this.burst(e.sprite.x, e.sprite.y, crit ? 0xffd040 : 0xb02020, crit ? 9 : 5);
     this.floatText(e.sprite.x, e.sprite.y - 20 * e.sprite.scale, crit ? `${dmg}!` : String(dmg), crit ? '#ffd040' : '#ffffff', crit ? 22 : 16);
     this.tweens.add({ targets: e.sprite, alpha: 0.4, duration: 60, yoyo: true });
     if (e.hp <= 0) this.killEnemy(e);
@@ -272,12 +336,13 @@ export class GameScene extends Phaser.Scene {
 
   private killEnemy(e: Enemy) {
     const { x, y } = e.sprite, boss = e.type.key === 'boss';
+    this.burst(x, y, e.type.body, 14, 70);
     e.sprite.destroy(); e.bar.destroy();
     this.enemies = this.enemies.filter(o => o !== e);
     if (this.target === e) this.target = null;
 
     const xp = Math.round(e.type.xp * (e.elite ? 4 : 1) * (1 + 0.15 * (this.depth_ - 1)));
-    if (this.state.addXp(xp)) this.floatText(this.player.x, this.player.y - 40, 'STUFENAUFSTIEG!', '#ffe14a', 22);
+    if (this.state.addXp(xp)) { sfx.play('levelup'); this.floatText(this.player.x, this.player.y - 40, 'STUFENAUFSTIEG!', '#ffe14a', 22); this.persist(); }
 
     const ilvl = this.state.level + this.depth_;
     if (boss) {
@@ -292,13 +357,14 @@ export class GameScene extends Phaser.Scene {
   }
 
   private win() {
+    sfx.play('win');
     this.victory = true;
     this.banner.setText('SIEG!\nDer Fürst der Tiefe ist gefallen.\nKlicken: nächster Durchgang (schwerer)').setColor('#ffe14a').setFontSize(30).setVisible(true);
   }
 
   private useSkill(i: number) {
     const s = this.state, sk = SKILLS[i], now = this.time.now;
-    if (this.dead || this.victory || now < this.skillReadyAt[i]) return;
+    if (this.dead || this.victory || this.paused || now < this.skillReadyAt[i]) return;
     if (s.mana < sk.mana) { this.floatText(this.player.x, this.player.y - 30, 'Zu wenig Mana', '#6f8fff'); return; }
 
     const near = (r: number) => this.enemies.filter(e => Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, this.player.x, this.player.y) <= r + e.radius);
@@ -306,18 +372,29 @@ export class GameScene extends Phaser.Scene {
       const reach = near(PLAYER.range * 1.5);
       const t = this.target && reach.includes(this.target) ? this.target : reach[0];
       if (!t) return;
+      sfx.play('bash');
       this.hitEnemy(t, 2.2);
     } else if (i === 1) {
       const hits = near(75);
       if (!hits.length) return;
+      sfx.play('whirl');
       hits.forEach(e => this.hitEnemy(e, 1.4));
       this.spin();
     } else {
+      sfx.play('buff');
       this.buffUntil = now + BUFF_MS;
       this.floatText(this.player.x, this.player.y - 30, 'Schlachtruf!', '#ff9040', 18);
     }
     s.mana -= sk.mana;
     this.skillReadyAt[i] = now + sk.cooldown;
+  }
+
+  private burst(x: number, y: number, color: number, n = 6, speed = 50) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, d = speed * (0.5 + Math.random());
+      const c = this.add.circle(x, y, Phaser.Math.Between(2, 3), color).setDepth(40);
+      this.tweens.add({ targets: c, x: x + Math.cos(a) * d, y: y + Math.sin(a) * d, alpha: 0, duration: 350, onComplete: () => c.destroy() });
+    }
   }
 
   private spin() {
@@ -329,9 +406,11 @@ export class GameScene extends Phaser.Scene {
     const s = this.state;
     const dmg = Math.max(1, Math.round(raw * (1 - s.reduction)));
     s.hp -= dmg;
+    sfx.play('hurt');
     this.floatText(this.player.x, this.player.y - 24, String(dmg), '#ff4040');
     this.cameras.main.shake(80, 0.003);
     if (s.hp <= 0) {
+      sfx.play('death');
       s.hp = 0; this.dead = true; this.path = []; this.target = null; this.pickup = null; this.toStairs = false;
       this.banner.setText('Du bist gestorben\nKlicken zum Wiederbeleben').setColor('#b01010').setFontSize(40).setVisible(true);
     }
@@ -351,6 +430,7 @@ export class GameScene extends Phaser.Scene {
 
   private shoot(fromX: number, fromY: number, angle: number, dmg: number, color: number, speed = 240) {
     const s = this.add.circle(fromX, fromY, color === 0xc060ff ? 7 : 5, color).setStrokeStyle(1, 0x000000).setDepth(12);
+    sfx.play('shoot');
     this.projectiles.push({ s, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, dmg, life: 2.5 });
   }
 
@@ -369,16 +449,18 @@ export class GameScene extends Phaser.Scene {
     if (!this.state.addItem(g.item)) {
       this.floatText(this.player.x, this.player.y - 30, 'Inventar voll', '#ff4040');
     } else {
+      sfx.play('pickup');
       g.box.destroy(); g.label.destroy();
       this.ground = this.ground.filter(o => o !== g);
       this.panel.refresh();
+      this.persist();
     }
     this.pickup = null; this.path = [];
   }
 
   // ---------- Game loop ----------
   update(time: number, delta: number) {
-    if (this.dead || this.victory) return;
+    if (this.dead || this.victory || this.paused) return;
     const dt = Math.min(delta, 50) / 1000, s = this.state;
     this.updatePlayer(time, dt);
     this.updateEnemies(time, dt);
@@ -415,8 +497,10 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (this.toStairs && this.stairs && Phaser.Math.Distance.Between(this.player.x, this.player.y, this.stairs.x, this.stairs.y) <= 28) {
+      sfx.play('stairs');
       this.depth_++;
       this.startLevel();
+      this.persist();
       return;
     }
 
@@ -555,6 +639,7 @@ export class GameScene extends Phaser.Scene {
     const x0 = width / 2 - total / 2, y0 = height - m - size;
     SKILLS.forEach((sk, i) => {
       const x = x0 + i * (size + gap);
+      this.skillZones[i].setPosition(x, y0).setSize(size, size);
       const ready = time >= this.skillReadyAt[i];
       g.fillStyle(0x181210).fillRect(x, y0, size, size);
       g.fillStyle(ready && s.mana >= sk.mana ? 0x7a5a2a : 0x3a302a).fillRect(x + 4, y0 + 4, size - 8, size - 8);
